@@ -26,8 +26,8 @@
     "runtime": null
   },
   "build": {
-    "buildCommand": "go build ./... && go test ./... -v 2>&1 | grep -E \"^(ok|PASS|FAIL)\" | tail -20",
-    "testCommand": "go test ./pkg/coordinator/... -v",
+    "buildCommand": "go build ./... && go test ./... -v 2>&1 | grep -E \"^(ok|PASS|FAIL|---)\" | tail -50",
+    "testCommand": "go test ./... -v 2>&1 | grep -E \"^(ok|PASS|FAIL)\" | tail -20",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {}
@@ -203,6 +203,12 @@
       "type": "file"
     },
     {
+      "path": "pkg/cli/commands_test.go",
+      "accessCount": 2,
+      "lastAccessed": 1778154973745,
+      "type": "file"
+    },
+    {
       "path": "",
       "accessCount": 1,
       "lastAccessed": 1778148809113,
@@ -320,6 +326,30 @@
       "path": "pkg/coordinator/errors.go",
       "accessCount": 1,
       "lastAccessed": 1778153428842,
+      "type": "file"
+    },
+    {
+      "path": "pkg/api/server.go",
+      "accessCount": 1,
+      "lastAccessed": 1778154193937,
+      "type": "file"
+    },
+    {
+      "path": "pkg/api/errors.go",
+      "accessCount": 1,
+      "lastAccessed": 1778154194057,
+      "type": "file"
+    },
+    {
+      "path": "pkg/cli/commands.go",
+      "accessCount": 1,
+      "lastAccessed": 1778154236512,
+      "type": "file"
+    },
+    {
+      "path": "pkg/api/server_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1778154418812,
       "type": "file"
     }
   ],
