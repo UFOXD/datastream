@@ -1,0 +1,28 @@
+# DataStream Configuration
+
+name = "datastream-1"
+
+[log]
+level = "info"
+format = "json"  # json or console
+output = "stdout"  # stdout or file path
+
+[source]
+# Source connector configuration
+# type = "mysql"
+# host = "localhost"
+# port = 3306
+# user = "root"
+# password = ""
+
+[sink]
+# Sink connector configuration
+# type = "mysql"
+# host = "localhost"
+# port = 3307
+# user = "root"
+# password = ""
+
+[pipeline]
+batch-size = 1000
+parallelism = 4

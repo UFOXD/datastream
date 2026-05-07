@@ -1,0 +1,63 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.txt
+coverage.html
+
+# Go workspace file
+go.work
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+*.tar.gz
+*.zip
+
+# Config files with secrets
+configs/*.local.toml
+configs/*.local.yaml
+.env
+.env.*
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+tmp/
+temp/
+
+# OMC state (keep directory structure but ignore contents)
+.omc/state/
+.omc/notepad.md
+.omc/wiki/
+.omc/plans/
+.omc/research/
+.omc/logs/
+
+# Keep these files
+!.omc/project-memory.json
+!.omc/.gitkeep
