@@ -26,8 +26,8 @@
     "runtime": null
   },
   "build": {
-    "buildCommand": "go build ./... && go test ./pkg/pipeline/... -v 2>&1 | tail -50",
-    "testCommand": "go test ./... -v 2>&1 | grep -E \"^(ok|PASS|FAIL|---)\" | tail -30",
+    "buildCommand": "go build ./... && go test ./... -v 2>&1 | grep -E \"^(ok|PASS|FAIL)\" | tail -20",
+    "testCommand": "go test ./pkg/coordinator/... -v",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {}
@@ -143,6 +143,12 @@
   },
   "hotPaths": [
     {
+      "path": "pkg/coordinator/coordinator_test.go",
+      "accessCount": 5,
+      "lastAccessed": 1778153585216,
+      "type": "file"
+    },
+    {
       "path": "pkg/sink/connector.go",
       "accessCount": 4,
       "lastAccessed": 1778152563640,
@@ -188,6 +194,12 @@
       "path": "pkg/source/mysql/config.go",
       "accessCount": 2,
       "lastAccessed": 1778152407726,
+      "type": "file"
+    },
+    {
+      "path": "pkg/coordinator/etcd.go",
+      "accessCount": 2,
+      "lastAccessed": 1778153470961,
       "type": "file"
     },
     {
@@ -302,6 +314,12 @@
       "path": "pkg/pipeline/pipeline_test.go",
       "accessCount": 1,
       "lastAccessed": 1778153169303,
+      "type": "file"
+    },
+    {
+      "path": "pkg/coordinator/errors.go",
+      "accessCount": 1,
+      "lastAccessed": 1778153428842,
       "type": "file"
     }
   ],
