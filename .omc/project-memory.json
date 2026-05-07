@@ -1,0 +1,309 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1778148747048,
+  "projectRoot": "/Users/peter/Codes/dts/datastream",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Go",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "go.mod"
+        ]
+      },
+      {
+        "name": "C/C++",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "Makefile"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "go",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": "go build ./... && go test ./pkg/pipeline/... -v 2>&1 | tail -50",
+    "testCommand": "go test ./... -v 2>&1 | grep -E \"^(ok|PASS|FAIL|---)\" | tail -30",
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "bin",
+      "docs",
+      "scripts",
+      "tests"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "bin": {
+      "path": "bin",
+      "purpose": "Executable scripts",
+      "fileCount": 2,
+      "lastAccessed": 1778148747019,
+      "keyFiles": [
+        "datastream",
+        "datastream-ctl"
+      ]
+    },
+    "cmd": {
+      "path": "cmd",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1778148747019,
+      "keyFiles": []
+    },
+    "configs": {
+      "path": "configs",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1778148747019,
+      "keyFiles": [
+        "datastream.toml"
+      ]
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 0,
+      "lastAccessed": 1778148747019,
+      "keyFiles": []
+    },
+    "internal": {
+      "path": "internal",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1778148747019,
+      "keyFiles": []
+    },
+    "pkg": {
+      "path": "pkg",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1778148747019,
+      "keyFiles": []
+    },
+    "proto": {
+      "path": "proto",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1778148747020,
+      "keyFiles": []
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 0,
+      "lastAccessed": 1778148747020,
+      "keyFiles": []
+    },
+    "tests": {
+      "path": "tests",
+      "purpose": "Test files",
+      "fileCount": 0,
+      "lastAccessed": 1778148747020,
+      "keyFiles": []
+    },
+    "pkg/config": {
+      "path": "pkg/config",
+      "purpose": "Configuration files",
+      "fileCount": 2,
+      "lastAccessed": 1778148747020,
+      "keyFiles": [
+        "config.go",
+        "config_test.go"
+      ]
+    },
+    "pkg/utils": {
+      "path": "pkg/utils",
+      "purpose": "Utility functions",
+      "fileCount": 5,
+      "lastAccessed": 1778148747021,
+      "keyFiles": [
+        "hash.go",
+        "pool.go",
+        "retry.go"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "pkg/sink/connector.go",
+      "accessCount": 4,
+      "lastAccessed": 1778152563640,
+      "type": "file"
+    },
+    {
+      "path": "pkg/pipeline/dispatcher.go",
+      "accessCount": 4,
+      "lastAccessed": 1778153201104,
+      "type": "file"
+    },
+    {
+      "path": "pkg/source/mysql/connector.go",
+      "accessCount": 3,
+      "lastAccessed": 1778152418222,
+      "type": "file"
+    },
+    {
+      "path": "pkg/source/postgres/connector.go",
+      "accessCount": 3,
+      "lastAccessed": 1778152418336,
+      "type": "file"
+    },
+    {
+      "path": "pkg/source/postgres/config.go",
+      "accessCount": 3,
+      "lastAccessed": 1778152563762,
+      "type": "file"
+    },
+    {
+      "path": "pkg/sink/mysql/connector.go",
+      "accessCount": 3,
+      "lastAccessed": 1778152755279,
+      "type": "file"
+    },
+    {
+      "path": "pkg/source/connector.go",
+      "accessCount": 2,
+      "lastAccessed": 1778152407498,
+      "type": "file"
+    },
+    {
+      "path": "pkg/source/mysql/config.go",
+      "accessCount": 2,
+      "lastAccessed": 1778152407726,
+      "type": "file"
+    },
+    {
+      "path": "",
+      "accessCount": 1,
+      "lastAccessed": 1778148809113,
+      "type": "directory"
+    },
+    {
+      "path": "pkg/event/position.go",
+      "accessCount": 1,
+      "lastAccessed": 1778148809164,
+      "type": "file"
+    },
+    {
+      "path": "pkg/event/change_event.go",
+      "accessCount": 1,
+      "lastAccessed": 1778148809219,
+      "type": "file"
+    },
+    {
+      "path": "pkg/source/errors.go",
+      "accessCount": 1,
+      "lastAccessed": 1778148861551,
+      "type": "file"
+    },
+    {
+      "path": "pkg/sink/errors.go",
+      "accessCount": 1,
+      "lastAccessed": 1778148861782,
+      "type": "file"
+    },
+    {
+      "path": "go.mod",
+      "accessCount": 1,
+      "lastAccessed": 1778152394997,
+      "type": "file"
+    },
+    {
+      "path": "pkg/sink/kafka/config.go",
+      "accessCount": 1,
+      "lastAccessed": 1778152625692,
+      "type": "file"
+    },
+    {
+      "path": "pkg/sink/kafka/connector.go",
+      "accessCount": 1,
+      "lastAccessed": 1778152625839,
+      "type": "file"
+    },
+    {
+      "path": "pkg/sink/mysql/config.go",
+      "accessCount": 1,
+      "lastAccessed": 1778152682084,
+      "type": "file"
+    },
+    {
+      "path": "pkg/event/row_data.go",
+      "accessCount": 1,
+      "lastAccessed": 1778152743951,
+      "type": "file"
+    },
+    {
+      "path": "pkg/source/connector_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1778152838510,
+      "type": "file"
+    },
+    {
+      "path": "pkg/sink/connector_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1778152838631,
+      "type": "file"
+    },
+    {
+      "path": "pkg/pipeline/pipeline.go",
+      "accessCount": 1,
+      "lastAccessed": 1778152925825,
+      "type": "file"
+    },
+    {
+      "path": "pkg/pipeline/errors.go",
+      "accessCount": 1,
+      "lastAccessed": 1778152925945,
+      "type": "file"
+    },
+    {
+      "path": "pkg/pipeline/buffer.go",
+      "accessCount": 1,
+      "lastAccessed": 1778152963503,
+      "type": "file"
+    },
+    {
+      "path": "pkg/pipeline/task.go",
+      "accessCount": 1,
+      "lastAccessed": 1778153121665,
+      "type": "file"
+    },
+    {
+      "path": "pkg/pipeline/coordinator.go",
+      "accessCount": 1,
+      "lastAccessed": 1778153121799,
+      "type": "file"
+    },
+    {
+      "path": "pkg/pipeline/task_errors.go",
+      "accessCount": 1,
+      "lastAccessed": 1778153121920,
+      "type": "file"
+    },
+    {
+      "path": "pkg/pipeline/pipeline_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1778153169303,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

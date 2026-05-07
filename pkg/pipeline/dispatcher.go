@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"strconv"
 	"sync"
 
 	"github.com/your-org/datastream/pkg/event"
@@ -76,7 +77,7 @@ func (d *HashDispatcher) Dispatch(ctx context.Context, e *event.ChangeEvent, sin
 
 		if row != nil {
 			if val, ok := row.Get(d.hashKey); ok {
-				keyVal = string(utils.FNV32(val.(string)))
+				keyVal = strconv.FormatUint(uint64(utils.FNV32(val.(string))), 10)
 			}
 		}
 	}
