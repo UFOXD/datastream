@@ -351,6 +351,12 @@
       "accessCount": 1,
       "lastAccessed": 1778154418812,
       "type": "file"
+    },
+    {
+      "path": "MEMORY.md",
+      "accessCount": 1,
+      "lastAccessed": 1778157891119,
+      "type": "file"
     }
   ],
   "userDirectives": []
