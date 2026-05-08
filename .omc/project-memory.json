@@ -26,8 +26,8 @@
     "runtime": null
   },
   "build": {
-    "buildCommand": "go build ./... 2>&1 && go test -bench=. -benchmem -run=^$ ./pkg/... 2>&1 | head -30",
-    "testCommand": "go test -bench=. -benchmem -run=^$ ./pkg/event/... ./pkg/pipeline/... 2>&1",
+    "buildCommand": "go build ./pkg/sink/kafka/... 2>&1",
+    "testCommand": "go test ./... 2>&1 | tail -20",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {}
@@ -143,6 +143,12 @@
   },
   "hotPaths": [
     {
+      "path": "pkg/sink/mysql/connector.go",
+      "accessCount": 6,
+      "lastAccessed": 1778229170338,
+      "type": "file"
+    },
+    {
       "path": "pkg/coordinator/coordinator_test.go",
       "accessCount": 5,
       "lastAccessed": 1778153585216,
@@ -150,8 +156,14 @@
     },
     {
       "path": "pkg/sink/connector.go",
-      "accessCount": 4,
-      "lastAccessed": 1778152563640,
+      "accessCount": 5,
+      "lastAccessed": 1778227798718,
+      "type": "file"
+    },
+    {
+      "path": "pkg/sink/kafka/connector.go",
+      "accessCount": 5,
+      "lastAccessed": 1778231241495,
       "type": "file"
     },
     {
@@ -174,26 +186,20 @@
     },
     {
       "path": "pkg/source/mysql/connector.go",
-      "accessCount": 3,
-      "lastAccessed": 1778152418222,
+      "accessCount": 4,
+      "lastAccessed": 1778227496224,
       "type": "file"
     },
     {
       "path": "pkg/source/postgres/connector.go",
-      "accessCount": 3,
-      "lastAccessed": 1778152418336,
+      "accessCount": 4,
+      "lastAccessed": 1778227496275,
       "type": "file"
     },
     {
       "path": "pkg/source/postgres/config.go",
-      "accessCount": 3,
-      "lastAccessed": 1778152563762,
-      "type": "file"
-    },
-    {
-      "path": "pkg/sink/mysql/connector.go",
-      "accessCount": 3,
-      "lastAccessed": 1778152755279,
+      "accessCount": 4,
+      "lastAccessed": 1778227792309,
       "type": "file"
     },
     {
@@ -209,15 +215,33 @@
       "type": "file"
     },
     {
-      "path": "pkg/source/connector.go",
-      "accessCount": 2,
-      "lastAccessed": 1778152407498,
+      "path": "pkg/pipeline/buffer.go",
+      "accessCount": 3,
+      "lastAccessed": 1778227502152,
       "type": "file"
     },
     {
       "path": "pkg/source/mysql/config.go",
-      "accessCount": 2,
-      "lastAccessed": 1778152407726,
+      "accessCount": 3,
+      "lastAccessed": 1778227792363,
+      "type": "file"
+    },
+    {
+      "path": "pkg/source/connector.go",
+      "accessCount": 3,
+      "lastAccessed": 1778227798771,
+      "type": "file"
+    },
+    {
+      "path": "pkg/sink/mysql/config.go",
+      "accessCount": 3,
+      "lastAccessed": 1778229096887,
+      "type": "file"
+    },
+    {
+      "path": "pkg/sink/kafka/config.go",
+      "accessCount": 3,
+      "lastAccessed": 1778229520090,
       "type": "file"
     },
     {
@@ -245,12 +269,6 @@
       "type": "file"
     },
     {
-      "path": "pkg/pipeline/buffer.go",
-      "accessCount": 2,
-      "lastAccessed": 1778225282644,
-      "type": "file"
-    },
-    {
       "path": "pkg/event/change_event.go",
       "accessCount": 2,
       "lastAccessed": 1778225282699,
@@ -270,9 +288,15 @@
     },
     {
       "path": "",
-      "accessCount": 1,
-      "lastAccessed": 1778148809113,
+      "accessCount": 2,
+      "lastAccessed": 1778227491214,
       "type": "directory"
+    },
+    {
+      "path": "pkg/pipeline/pipeline.go",
+      "accessCount": 2,
+      "lastAccessed": 1778227804033,
+      "type": "file"
     },
     {
       "path": "pkg/event/position.go",
@@ -293,24 +317,6 @@
       "type": "file"
     },
     {
-      "path": "pkg/sink/kafka/config.go",
-      "accessCount": 1,
-      "lastAccessed": 1778152625692,
-      "type": "file"
-    },
-    {
-      "path": "pkg/sink/kafka/connector.go",
-      "accessCount": 1,
-      "lastAccessed": 1778152625839,
-      "type": "file"
-    },
-    {
-      "path": "pkg/sink/mysql/config.go",
-      "accessCount": 1,
-      "lastAccessed": 1778152682084,
-      "type": "file"
-    },
-    {
       "path": "pkg/source/connector_test.go",
       "accessCount": 1,
       "lastAccessed": 1778152838510,
@@ -320,12 +326,6 @@
       "path": "pkg/sink/connector_test.go",
       "accessCount": 1,
       "lastAccessed": 1778152838631,
-      "type": "file"
-    },
-    {
-      "path": "pkg/pipeline/pipeline.go",
-      "accessCount": 1,
-      "lastAccessed": 1778152925825,
       "type": "file"
     },
     {
