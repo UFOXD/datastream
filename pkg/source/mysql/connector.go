@@ -2,11 +2,16 @@ package mysql
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/UFOXD/datastream/pkg/event"
 	"github.com/UFOXD/datastream/pkg/source"
+	"github.com/go-mysql-org/go-mysql/canal"
+	"github.com/go-mysql-org/go-mysql/mysql"
+	"github.com/go-mysql-org/go-mysql/schema"
 	"github.com/pingcap/log"
 	"go.uber.org/zap"
 )
@@ -22,6 +27,15 @@ type Connector struct {
 	wg          sync.WaitGroup
 	mu          sync.RWMutex
 	schemaCache map[string]*event.TableInfo
+
+	// Canal for binlog replication
+	canal *canal.Canal
+
+	// Database connection for schema queries
+	db *sql.DB
+
+	// Current binlog file
+	currentBinlog string
 }
 
 // New creates a new MySQL source connector.
@@ -62,14 +76,56 @@ func (c *Connector) Initialize(ctx context.Context, config source.Config) error 
 	c.status.State = source.StateInitializing
 	c.status.Timestamp = time.Now().Format(time.RFC3339)
 
+	// Initialize database connection for schema queries
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/?parseTime=true&timeout=%ds",
+		cfg.User,
+		cfg.Password,
+		cfg.Host,
+		cfg.Port,
+		cfg.ConnectTimeout,
+	)
+
+	if cfg.SSLMode != "" {
+		dsn += fmt.Sprintf("&tls=%s", cfg.SSLMode)
+	}
+
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return fmt.Errorf("failed to open database: %w", err)
+	}
+
+	db.SetMaxOpenConns(cfg.MaxConnections)
+	db.SetMaxIdleConns(cfg.MaxIdle)
+	db.SetConnMaxLifetime(time.Hour)
+
+	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+		return fmt.Errorf("failed to connect to database: %w", err)
+	}
+
+	c.db = db
+
 	// Initialize position if provided
 	if config.Offset.Path != "" {
-		// TODO: Load position from offset storage
 		log.Info("loading position from offset storage", zap.String("path", config.Offset.Path))
+		// TODO: Load position from offset storage
+	}
+
+	// Set initial binlog file if configured
+	if cfg.BinlogFile != "" {
+		c.currentBinlog = cfg.BinlogFile
+		c.position = &event.Position{
+			BinlogFile: cfg.BinlogFile,
+			BinlogPos:  cfg.BinlogPos,
+		}
 	}
 
 	c.status.State = source.StateStopped
-	log.Info("MySQL connector initialized", zap.String("host", cfg.Host), zap.Int("port", cfg.Port))
+	log.Info("MySQL connector initialized",
+		zap.String("host", cfg.Host),
+		zap.Int("port", cfg.Port),
+		zap.Uint32("serverId", cfg.ServerID))
+
 	return nil
 }
 
@@ -84,6 +140,44 @@ func (c *Connector) Start(ctx context.Context) error {
 	c.mu.Unlock()
 
 	log.Info("starting MySQL connector")
+
+	// Create canal config
+	canalCfg := canal.NewDefaultConfig()
+	canalCfg.Addr = fmt.Sprintf("%s:%d", c.config.Host, c.config.Port)
+	canalCfg.User = c.config.User
+	canalCfg.Password = c.config.Password
+	canalCfg.ServerID = c.config.ServerID
+	canalCfg.Flavor = "mysql"
+
+	// Disable initial dump - we'll handle snapshot separately
+	canalCfg.Dump.ExecutionPath = ""
+
+	// Set databases/tables filter
+	if len(c.config.Databases) > 0 {
+		canalCfg.IncludeTableRegex = make([]string, 0, len(c.config.Databases))
+		for _, db := range c.config.Databases {
+			canalCfg.IncludeTableRegex = append(canalCfg.IncludeTableRegex,
+				fmt.Sprintf("^%s\\..*$", db))
+		}
+	}
+
+	// Create canal
+	canal, err := canal.NewCanal(canalCfg)
+	if err != nil {
+		c.mu.Lock()
+		c.status.State = source.StateError
+		c.status.Message = err.Error()
+		c.mu.Unlock()
+		return fmt.Errorf("failed to create canal: %w", err)
+	}
+
+	c.mu.Lock()
+	c.canal = canal
+	c.mu.Unlock()
+
+	// Set event handler
+	handler := NewBinlogHandler(ctx, c)
+	canal.SetEventHandler(handler)
 
 	// Start binlog streaming in a goroutine
 	c.wg.Add(1)
@@ -104,6 +198,16 @@ func (c *Connector) Stop(ctx context.Context) error {
 
 	log.Info("stopping MySQL connector")
 	close(c.stopCh)
+
+	// Close canal
+	c.mu.RLock()
+	canal := c.canal
+	c.mu.RUnlock()
+
+	if canal != nil {
+		canal.Close()
+	}
+
 	c.wg.Wait()
 
 	log.Info("MySQL connector stopped")
@@ -155,54 +259,211 @@ func (c *Connector) GetSchema(database, table string) (*event.TableInfo, error) 
 	}
 	c.mu.RUnlock()
 
-	// TODO: Query schema from MySQL
-	return nil, source.ErrSchemaNotFound
+	// Query schema from MySQL
+	return c.querySchema(database, table)
+}
+
+// shouldCapture checks if a table should be captured.
+func (c *Connector) shouldCapture(database, table string) bool {
+	if len(c.config.Databases) == 0 {
+		return true
+	}
+
+	for _, db := range c.config.Databases {
+		if db == database || db == "*" {
+			return true
+		}
+	}
+
+	// Check table patterns
+	for db, pattern := range c.config.Tables {
+		if db == database || db == "*" {
+			if pattern == "*" || pattern == "" {
+				return true
+			}
+			// Simple pattern matching
+			if matchPattern(pattern, table) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// matchPattern performs simple pattern matching.
+func matchPattern(pattern, s string) bool {
+	if pattern == "*" {
+		return true
+	}
+	// TODO: Implement proper pattern matching with wildcards
+	return pattern == s
+}
+
+// getTableInfo gets or builds table info from canal table.
+func (c *Connector) getTableInfo(table *schema.Table) *event.TableInfo {
+	key := table.Schema + "." + table.Name
+
+	c.mu.RLock()
+	if info, ok := c.schemaCache[key]; ok {
+		c.mu.RUnlock()
+		return info
+	}
+	c.mu.RUnlock()
+
+	// Build table info
+	info := &event.TableInfo{
+		Database: table.Schema,
+		Table:    table.Name,
+	}
+
+	// Build column info
+	columns := make([]event.ColumnInfo, 0, len(table.Columns))
+	keyColumns := make([]string, 0)
+
+	for i, col := range table.Columns {
+		columns = append(columns, event.ColumnInfo{
+			Name:     col.Name,
+			Type:     col.RawType,
+			Nullable: true, // Default to nullable
+		})
+
+		// Check if this is a primary key column
+		if table.IsPrimaryKey(i) {
+			keyColumns = append(keyColumns, col.Name)
+		}
+	}
+
+	info.Columns = columns
+	info.PrimaryKeyColumns = keyColumns
+
+	// Cache it
+	c.mu.Lock()
+	c.schemaCache[key] = info
+	c.mu.Unlock()
+
+	return info
+}
+
+// currentBinlogFile returns the current binlog file name.
+func (c *Connector) currentBinlogFile() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.currentBinlog
 }
 
 // run is the main event loop.
 func (c *Connector) run(ctx context.Context) {
 	defer c.wg.Done()
 
-	// TODO: Implement actual binlog streaming
-	// For now, just a skeleton that handles shutdown
-	ticker := time.NewTicker(time.Second * 5)
-	defer ticker.Stop()
+	// Get canal and starting position
+	c.mu.RLock()
+	canal := c.canal
+	pos := c.position
+	c.mu.RUnlock()
 
-	for {
-		select {
-		case <-ctx.Done():
-			log.Info("MySQL connector context done")
-			return
-		case <-c.stopCh:
-			log.Info("MySQL connector stop signal received")
-			return
-		case <-ticker.C:
-			// Send heartbeat
-			c.sendHeartbeat(ctx)
+	if canal == nil {
+		log.Error("canal not initialized")
+		c.sendError(fmt.Errorf("canal not initialized"))
+		return
+	}
+
+	// Run canal
+	errCh := make(chan error, 1)
+	go func() {
+		var err error
+		if pos != nil && pos.BinlogFile != "" {
+			err = canal.RunFrom(mysql.Position{
+				Name: pos.BinlogFile,
+				Pos:  pos.BinlogPos,
+			})
+		} else {
+			err = canal.Run()
+		}
+		errCh <- err
+	}()
+
+	// Wait for stop signal or error
+	select {
+	case <-ctx.Done():
+		log.Info("MySQL connector context done")
+		canal.Close()
+	case <-c.stopCh:
+		log.Info("MySQL connector stop signal received")
+		canal.Close()
+	case err := <-errCh:
+		if err != nil {
+			log.Error("canal error", zap.Error(err))
+			c.sendError(err)
 		}
 	}
 }
 
-// sendHeartbeat sends a heartbeat event.
-func (c *Connector) sendHeartbeat(ctx context.Context) {
+// sendError sends an error to the errors channel.
+func (c *Connector) sendError(err error) {
+	select {
+	case c.errors <- err:
+	case <-time.After(time.Second * 5):
+		log.Warn("failed to send error, channel full", zap.Error(err))
+	}
+}
+
+// querySchema queries the table schema from MySQL.
+func (c *Connector) querySchema(database, table string) (*event.TableInfo, error) {
 	c.mu.RLock()
-	pos := c.position
+	db := c.db
 	c.mu.RUnlock()
 
-	if pos == nil {
-		pos = &event.Position{CommitTime: time.Now()}
+	if db == nil {
+		return nil, source.ErrNotInitialized
 	}
 
-	hb := event.NewHeartbeat(event.SourceInfo{
-		Connector: "mysql",
-		Database:  c.config.Databases[0],
-	}, *pos)
-
-	select {
-	case c.events <- hb.ToChangeEvent():
-	case <-ctx.Done():
-	case <-c.stopCh:
+	info := &event.TableInfo{
+		Database: database,
+		Table:    table,
 	}
+
+	// Query columns
+	rows, err := db.Query(`
+		SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY
+		FROM INFORMATION_SCHEMA.COLUMNS
+		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+		ORDER BY ORDINAL_POSITION
+	`, database, table)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query columns: %w", err)
+	}
+	defer rows.Close()
+
+	columns := make([]event.ColumnInfo, 0)
+	keyColumns := make([]string, 0)
+
+	for rows.Next() {
+		var colName, dataType, isNullable, columnKey string
+		if err := rows.Scan(&colName, &dataType, &isNullable, &columnKey); err != nil {
+			return nil, fmt.Errorf("failed to scan column: %w", err)
+		}
+
+		columns = append(columns, event.ColumnInfo{
+			Name:     colName,
+			Type:     dataType,
+			Nullable: isNullable == "YES",
+		})
+
+		if columnKey == "PRI" {
+			keyColumns = append(keyColumns, colName)
+		}
+	}
+
+	info.Columns = columns
+	info.PrimaryKeyColumns = keyColumns
+
+	// Cache it
+	c.mu.Lock()
+	c.schemaCache[database+"."+table] = info
+	c.mu.Unlock()
+
+	return info, nil
 }
 
 func parseConfig(config source.Config) (*Config, error) {
@@ -232,6 +493,9 @@ func parseConfig(config source.Config) (*Config, error) {
 	}
 	if v, ok := config.Properties["sslMode"].(string); ok {
 		cfg.SSLMode = v
+	}
+	if v, ok := config.Properties["includeSchemaEvents"].(bool); ok {
+		cfg.IncludeSchemaEvents = v
 	}
 
 	// Copy databases
