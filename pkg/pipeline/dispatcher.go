@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/your-org/datastream/pkg/event"
-	"github.com/your-org/datastream/pkg/sink"
-	"github.com/your-org/datastream/pkg/utils"
+	"github.com/UFOXD/datastream/pkg/event"
+	"github.com/UFOXD/datastream/pkg/sink"
+	"github.com/UFOXD/datastream/pkg/utils"
 )
 
 // Dispatcher defines how events are dispatched to sinks.

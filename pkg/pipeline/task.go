@@ -5,37 +5,37 @@ import (
 	"sync"
 	"time"
 
+	"github.com/UFOXD/datastream/pkg/event"
 	"github.com/pingcap/log"
-	"github.com/your-org/datastream/pkg/event"
 	"go.uber.org/zap"
 )
 
 // Task represents a data synchronization task.
 type Task struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Status      TaskStatus        `json:"status"`
-	Config      *Config           `json:"config"`
-	Pipeline    *Pipeline         `json:"-"`
-	Position    *event.Position   `json:"position"`
-	CreatedAt   time.Time         `json:"createdAt"`
-	UpdatedAt   time.Time         `json:"updatedAt"`
-	StartedAt   *time.Time        `json:"startedAt,omitempty"`
-	StoppedAt   *time.Time        `json:"stoppedAt,omitempty"`
-	mu          sync.RWMutex
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Status    TaskStatus      `json:"status"`
+	Config    *Config         `json:"config"`
+	Pipeline  *Pipeline       `json:"-"`
+	Position  *event.Position `json:"position"`
+	CreatedAt time.Time       `json:"createdAt"`
+	UpdatedAt time.Time       `json:"updatedAt"`
+	StartedAt *time.Time      `json:"startedAt,omitempty"`
+	StoppedAt *time.Time      `json:"stoppedAt,omitempty"`
+	mu        sync.RWMutex
 }
 
 // TaskStatus represents task status.
 type TaskStatus string
 
 const (
-	TaskStatusCreated   TaskStatus = "created"
-	TaskStatusStarting  TaskStatus = "starting"
-	TaskStatusRunning   TaskStatus = "running"
-	TaskStatusPaused    TaskStatus = "paused"
-	TaskStatusStopping  TaskStatus = "stopping"
-	TaskStatusStopped   TaskStatus = "stopped"
-	TaskStatusError     TaskStatus = "error"
+	TaskStatusCreated  TaskStatus = "created"
+	TaskStatusStarting TaskStatus = "starting"
+	TaskStatusRunning  TaskStatus = "running"
+	TaskStatusPaused   TaskStatus = "paused"
+	TaskStatusStopping TaskStatus = "stopping"
+	TaskStatusStopped  TaskStatus = "stopped"
+	TaskStatusError    TaskStatus = "error"
 )
 
 // NewTask creates a new task.
@@ -169,8 +169,8 @@ func (t *Task) GetStatus() TaskStatus {
 
 // TaskManager manages multiple tasks.
 type TaskManager struct {
-	tasks    map[string]*Task
-	mu       sync.RWMutex
+	tasks       map[string]*Task
+	mu          sync.RWMutex
 	coordinator Coordinator
 }
 

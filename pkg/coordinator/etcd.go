@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/UFOXD/datastream/pkg/event"
+	"github.com/UFOXD/datastream/pkg/pipeline"
 	"github.com/pingcap/log"
-	"github.com/your-org/datastream/pkg/event"
-	"github.com/your-org/datastream/pkg/pipeline"
-	"go.etcd.io/etcd/client/v3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
 	"go.uber.org/zap"
 )

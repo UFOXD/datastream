@@ -2,7 +2,7 @@
 package postgres
 
 import (
-	"github.com/your-org/datastream/pkg/source"
+	"github.com/UFOXD/datastream/pkg/source"
 )
 
 // Config holds PostgreSQL-specific configuration.
@@ -15,18 +15,18 @@ type Config struct {
 	Database string `json:"database"`
 
 	// Replication settings
-	PluginName    string `json:"pluginName"`    // pgoutput, wal2json, decoderbufs
-	SlotName      string `json:"slotName"`      // Replication slot name
-	CreateSlot    bool   `json:"createSlot"`    // Create slot if not exists
-	DropSlotOnStop bool  `json:"dropSlotOnStop"` // Drop slot when stopped
+	PluginName     string `json:"pluginName"`     // pgoutput, wal2json, decoderbufs
+	SlotName       string `json:"slotName"`       // Replication slot name
+	CreateSlot     bool   `json:"createSlot"`     // Create slot if not exists
+	DropSlotOnStop bool   `json:"dropSlotOnStop"` // Drop slot when stopped
 
 	// Publication settings (for pgoutput)
-	PublicationName string `json:"publicationName"`
-	CreatePublication bool `json:"createPublication"`
+	PublicationName   string `json:"publicationName"`
+	CreatePublication bool   `json:"createPublication"`
 
 	// Schemas and tables
-	Schemas       []string          `json:"schemas"`
-	Tables        map[string]string `json:"tables"` // schema.table -> filter
+	Schemas []string          `json:"schemas"`
+	Tables  map[string]string `json:"tables"` // schema.table -> filter
 
 	// LSN settings
 	StartLSN uint64 `json:"startLsn,omitempty"` // Start from specific LSN

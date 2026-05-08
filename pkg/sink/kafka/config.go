@@ -2,7 +2,7 @@
 package kafka
 
 import (
-	"github.com/your-org/datastream/pkg/sink"
+	"github.com/UFOXD/datastream/pkg/sink"
 )
 
 // Config holds Kafka-specific configuration.
@@ -11,19 +11,19 @@ type Config struct {
 	Brokers []string `json:"brokers"`
 
 	// Topic settings
-	Topic              string `json:"topic"`
+	Topic               string `json:"topic"`
 	TopicNamingStrategy string `json:"topicNamingStrategy"` // default, table, database
 
 	// Producer settings
-	Acks              string `json:"acks"`              // none, leader, all
-	Compression       string `json:"compression"`       // none, gzip, snappy, lz4, zstd
-	MaxMessageBytes   int    `json:"maxMessageBytes"`   // max message size
-	QueueBuffer       int    `json:"queueBuffer"`       // queue buffer size
-	BatchSize         int    `json:"batchSize"`         // messages per batch
-	BatchTimeout      int    `json:"batchTimeout"`      // batch timeout in ms
-	Retries           int    `json:"retries"`           // retry count
-	RetryBackoff      int    `json:"retryBackoff"`      // retry backoff in ms
-	FlushTimeout      int    `json:"flushTimeout"`      // flush timeout in ms
+	Acks            string `json:"acks"`            // none, leader, all
+	Compression     string `json:"compression"`     // none, gzip, snappy, lz4, zstd
+	MaxMessageBytes int    `json:"maxMessageBytes"` // max message size
+	QueueBuffer     int    `json:"queueBuffer"`     // queue buffer size
+	BatchSize       int    `json:"batchSize"`       // messages per batch
+	BatchTimeout    int    `json:"batchTimeout"`    // batch timeout in ms
+	Retries         int    `json:"retries"`         // retry count
+	RetryBackoff    int    `json:"retryBackoff"`    // retry backoff in ms
+	FlushTimeout    int    `json:"flushTimeout"`    // flush timeout in ms
 
 	// Message settings
 	KeyFormat    string `json:"keyFormat"`    // avro, json, schema

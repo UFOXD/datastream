@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/your-org/datastream/pkg/event"
+	"github.com/UFOXD/datastream/pkg/event"
 )
 
 func TestConfigValidation(t *testing.T) {
@@ -151,8 +151,8 @@ func TestTableFilter(t *testing.T) {
 
 func TestOffsetConfig(t *testing.T) {
 	cfg := OffsetConfig{
-		Backend:      "file",
-		Path:         "/tmp/offset.json",
+		Backend:       "file",
+		Path:          "/tmp/offset.json",
 		FlushInterval: 1000,
 	}
 

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/your-org/datastream/pkg/version"
+	"github.com/UFOXD/datastream/pkg/version"
 )
 
 var (

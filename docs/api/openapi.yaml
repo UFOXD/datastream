@@ -1,0 +1,558 @@
+openapi: 3.0.3
+info:
+  title: DataStream API
+  description: |
+    DataStream is a CDC (Change Data Capture) platform for real-time data synchronization.
+    This API provides endpoints for managing tasks, positions, and monitoring the system.
+  version: 1.0.0
+  contact:
+    name: DataStream Team
+    email: support@datastream.io
+
+servers:
+  - url: http://localhost:8300
+    description: Local development server
+
+tags:
+  - name: Health
+    description: Health check endpoints
+  - name: Tasks
+    description: Task management operations
+  - name: Nodes
+    description: Node management operations
+  - name: Metrics
+    description: Prometheus metrics
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      description: Returns the health status of the DataStream service
+      operationId: getHealth
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: healthy
+                timestamp: "2024-01-15T10:30:00Z"
+
+  /api/v1/tasks:
+    get:
+      tags:
+        - Tasks
+      summary: List all tasks
+      description: Returns a list of all CDC tasks
+      operationId: listTasks
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskListResponse'
+              example:
+                tasks:
+                  - id: task-001
+                    name: mysql-to-kafka
+                    status: running
+                    source: mysql://localhost:3306/test
+                    sink: kafka://localhost:9092/events
+                count: 1
+        '503':
+          description: Task manager not available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    post:
+      tags:
+        - Tasks
+      summary: Create a new task
+      description: Creates a new CDC synchronization task
+      operationId: createTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskRequest'
+            example:
+              id: task-001
+              name: mysql-to-kafka
+              config:
+                sourceType: mysql
+                sinkType: kafka
+                batchSize: 1000
+      responses:
+        '201':
+          description: Task created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/tasks/{id}:
+    get:
+      tags:
+        - Tasks
+      summary: Get task by ID
+      description: Returns details of a specific task
+      operationId: getTask
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Task ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '404':
+          description: Task not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      tags:
+        - Tasks
+      summary: Delete a task
+      description: Deletes a CDC task by ID
+      operationId: deleteTask
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Task ID
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Task deleted successfully
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/tasks/{id}/start:
+    post:
+      tags:
+        - Tasks
+      summary: Start a task
+      description: Starts a stopped or paused task
+      operationId: startTask
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Task ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Task started successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+              example:
+                status: started
+        '500':
+          description: Failed to start task
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/tasks/{id}/stop:
+    post:
+      tags:
+        - Tasks
+      summary: Stop a task
+      description: Stops a running task
+      operationId: stopTask
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Task ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Task stopped successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+              example:
+                status: stopped
+        '500':
+          description: Failed to stop task
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/tasks/{id}/pause:
+    post:
+      tags:
+        - Tasks
+      summary: Pause a task
+      description: Pauses a running task (can be resumed)
+      operationId: pauseTask
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Task ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Task paused successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+              example:
+                status: paused
+        '404':
+          description: Task not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/tasks/{id}/resume:
+    post:
+      tags:
+        - Tasks
+      summary: Resume a paused task
+      description: Resumes a paused task
+      operationId: resumeTask
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Task ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Task resumed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+              example:
+                status: running
+        '404':
+          description: Task not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/tasks/{id}/position:
+    get:
+      tags:
+        - Tasks
+      summary: Get task position
+      description: Returns the current replication position of a task
+      operationId: getTaskPosition
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Task ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PositionResponse'
+        '404':
+          description: Task not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    put:
+      tags:
+        - Tasks
+      summary: Set task position
+      description: Sets the replication position for a task (useful for recovery)
+      operationId: setTaskPosition
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Task ID
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Position'
+            example:
+              binlogFile: mysql-bin.000003
+              binlogPos: 12345
+      responses:
+        '200':
+          description: Position updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+              example:
+                status: updated
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/nodes:
+    get:
+      tags:
+        - Nodes
+      summary: List all nodes
+      description: Returns a list of all registered DataStream nodes
+      operationId: listNodes
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodeListResponse'
+              example:
+                nodes:
+                  - id: node-001
+                    address: 192.168.1.10:8300
+                    status: online
+                    isLeader: true
+                count: 1
+        '503':
+          description: Coordinator not available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /metrics:
+    get:
+      tags:
+        - Metrics
+      summary: Prometheus metrics
+      description: Returns metrics in Prometheus text format
+      operationId: getMetrics
+      responses:
+        '200':
+          description: Metrics in Prometheus format
+          content:
+            text/plain:
+              example: |
+                # DataStream Metrics
+                # HELP datastream_events_total Total number of events processed
+                # TYPE datastream_events_total counter
+                datastream_events_total{task="task-001"} 12345
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy]
+        timestamp:
+          type: string
+          format: date-time
+
+    Task:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique task identifier
+        name:
+          type: string
+          description: Human-readable task name
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        source:
+          type: string
+          description: Source connection string
+        sink:
+          type: string
+          description: Sink connection string
+        config:
+          type: object
+          additionalProperties:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    TaskStatus:
+      type: string
+      enum:
+        - stopped
+        - running
+        - paused
+        - error
+
+    TaskListResponse:
+      type: object
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+        count:
+          type: integer
+
+    CreateTaskRequest:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+          description: Unique task identifier
+        name:
+          type: string
+          description: Human-readable task name
+        config:
+          $ref: '#/components/schemas/TaskConfig'
+
+    TaskConfig:
+      type: object
+      properties:
+        sourceType:
+          type: string
+          enum: [mysql, postgres]
+        sinkType:
+          type: string
+          enum: [kafka, mysql]
+        batchSize:
+          type: integer
+          default: 1000
+        flushInterval:
+          type: integer
+          default: 1000
+          description: Flush interval in milliseconds
+
+    Position:
+      type: object
+      properties:
+        binlogFile:
+          type: string
+          description: MySQL binlog file name
+        binlogPos:
+          type: integer
+          format: uint32
+          description: MySQL binlog position
+        lsn:
+          type: integer
+          format: uint64
+          description: PostgreSQL LSN
+        txId:
+          type: string
+          description: Transaction ID
+        seqNo:
+          type: integer
+          description: Sequence number within transaction
+
+    PositionResponse:
+      type: object
+      properties:
+        taskId:
+          type: string
+        position:
+          $ref: '#/components/schemas/Position'
+
+    StatusResponse:
+      type: object
+      properties:
+        status:
+          type: string
+
+    Node:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique node identifier
+        address:
+          type: string
+          description: Node address (host:port)
+        status:
+          type: string
+          enum: [online, offline]
+        isLeader:
+          type: boolean
+          description: Whether this node is the current leader
+        registeredAt:
+          type: string
+          format: date-time
+
+    NodeListResponse:
+      type: object
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/Node'
+        count:
+          type: integer
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+        code:
+          type: string
+          description: HTTP status code

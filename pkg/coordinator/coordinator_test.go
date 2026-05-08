@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/your-org/datastream/pkg/event"
-	"github.com/your-org/datastream/pkg/pipeline"
-	"go.etcd.io/etcd/client/v3"
+	"github.com/UFOXD/datastream/pkg/event"
+	"github.com/UFOXD/datastream/pkg/pipeline"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 func TestEtcdConfigDefaults(t *testing.T) {

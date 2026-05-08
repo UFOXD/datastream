@@ -5,12 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
 
-	"github.com/your-org/datastream/pkg/config"
-	"github.com/your-org/datastream/pkg/logutil"
-	"github.com/your-org/datastream/pkg/version"
+	"github.com/UFOXD/datastream/pkg/app"
+	"github.com/UFOXD/datastream/pkg/config"
+	"github.com/UFOXD/datastream/pkg/logutil"
+	"github.com/UFOXD/datastream/pkg/version"
 )
 
 var (
@@ -19,6 +18,11 @@ var (
 	// BuildTime is set at build time
 	BuildTime = "unknown"
 )
+
+func init() {
+	version.Version = Version
+	version.BuildTime = BuildTime
+}
 
 func main() {
 	// Parse flags
@@ -46,28 +50,23 @@ func main() {
 
 	logger := logutil.L()
 	logger.Info("DataStream starting",
-		logutil.StringField("version", version.Version),
-		logutil.StringField("build", version.BuildTime),
+		logutil.StringField("version", Version),
+		logutil.StringField("build", BuildTime),
 	)
 
-	// Create context with cancellation
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// Create application
+	application, err := app.New(cfg)
+	if err != nil {
+		logger.Error("Failed to create application", logutil.ErrorField(err))
+		os.Exit(1)
+	}
 
-	// Handle shutdown signals
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	// Run application (blocks until shutdown)
+	ctx := context.Background()
+	if err := application.Run(ctx); err != nil {
+		logger.Error("Application error", logutil.ErrorField(err))
+		os.Exit(1)
+	}
 
-	go func() {
-		sig := <-sigCh
-		logger.Info("Received shutdown signal", logutil.StringField("signal", sig.String()))
-		cancel()
-	}()
-
-	// TODO: Start the application
-	logger.Info("DataStream started")
-
-	// Wait for shutdown
-	<-ctx.Done()
-	logger.Info("DataStream stopped")
+	logger.Info("DataStream stopped gracefully")
 }

@@ -8,19 +8,19 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/UFOXD/datastream/pkg/pipeline"
 	"github.com/gorilla/mux"
 	"github.com/pingcap/log"
-	"github.com/your-org/datastream/pkg/pipeline"
 	"go.uber.org/zap"
 )
 
 // Server represents the API server.
 type Server struct {
-	httpServer *http.Server
-	router     *mux.Router
-	taskMgr    *pipeline.TaskManager
+	httpServer  *http.Server
+	router      *mux.Router
+	taskMgr     *pipeline.TaskManager
 	coordinator pipeline.Coordinator
-	config     *ServerConfig
+	config      *ServerConfig
 }
 
 // ServerConfig holds API server configuration.
@@ -155,9 +155,9 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		ID     string            `json:"id"`
-		Name   string            `json:"name"`
-		Config *pipeline.Config  `json:"config"`
+		ID     string           `json:"id"`
+		Name   string           `json:"name"`
+		Config *pipeline.Config `json:"config"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

@@ -4,7 +4,7 @@ package source
 import (
 	"context"
 
-	"github.com/your-org/datastream/pkg/event"
+	"github.com/UFOXD/datastream/pkg/event"
 )
 
 // Connector defines the interface for a source connector.
@@ -100,7 +100,7 @@ type SnapshotMode string
 const (
 	SnapshotModeNever   SnapshotMode = "never"   // Never take snapshot
 	SnapshotModeInitial SnapshotMode = "initial" // Snapshot on first start
-	SnapshotModeAlways  SnapshotMode = "always" // Always snapshot on start
+	SnapshotModeAlways  SnapshotMode = "always"  // Always snapshot on start
 )
 
 // OffsetConfig configures offset storage.
@@ -127,11 +127,11 @@ type State string
 
 const (
 	StateUninitialized State = "uninitialized"
-	StateInitializing   State = "initializing"
-	StateRunning        State = "running"
-	StatePaused         State = "paused"
-	StateStopped        State = "stopped"
-	StateError          State = "error"
+	StateInitializing  State = "initializing"
+	StateRunning       State = "running"
+	StatePaused        State = "paused"
+	StateStopped       State = "stopped"
+	StateError         State = "error"
 )
 
 // Factory creates source connectors.

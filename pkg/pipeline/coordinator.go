@@ -3,7 +3,7 @@ package pipeline
 import (
 	"context"
 
-	"github.com/your-org/datastream/pkg/event"
+	"github.com/UFOXD/datastream/pkg/event"
 )
 
 // Coordinator coordinates tasks across multiple nodes.

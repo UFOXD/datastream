@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/your-org/datastream/pkg/pipeline"
+	"github.com/UFOXD/datastream/pkg/pipeline"
 )
 
 func TestNewServer(t *testing.T) {

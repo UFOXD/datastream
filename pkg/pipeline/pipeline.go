@@ -6,11 +6,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/UFOXD/datastream/pkg/event"
+	"github.com/UFOXD/datastream/pkg/metrics"
+	"github.com/UFOXD/datastream/pkg/sink"
+	"github.com/UFOXD/datastream/pkg/source"
 	"github.com/pingcap/log"
-	"github.com/your-org/datastream/pkg/event"
-	"github.com/your-org/datastream/pkg/metrics"
-	"github.com/your-org/datastream/pkg/sink"
-	"github.com/your-org/datastream/pkg/source"
 	"go.uber.org/zap"
 )
 
@@ -59,16 +59,16 @@ type DispatcherConfig struct {
 
 // RetryConfig configures retry behavior.
 type RetryConfig struct {
-	MaxRetries   int     `json:"maxRetries"`
-	InitialWait  int     `json:"initialWait"`  // ms
-	MaxWait      int     `json:"maxWait"`      // ms
-	Multiplier   float64 `json:"multiplier"`
+	MaxRetries  int     `json:"maxRetries"`
+	InitialWait int     `json:"initialWait"` // ms
+	MaxWait     int     `json:"maxWait"`     // ms
+	Multiplier  float64 `json:"multiplier"`
 }
 
 // CoordinatorConfig configures the coordinator.
 type CoordinatorConfig struct {
-	Enabled  bool   `json:"enabled"`
-	Backend  string `json:"backend"`  // memory, etcd, consul
+	Enabled   bool     `json:"enabled"`
+	Backend   string   `json:"backend"` // memory, etcd, consul
 	Endpoints []string `json:"endpoints"`
 }
 
@@ -85,26 +85,26 @@ type Status struct {
 type State string
 
 const (
-	StateCreated    State = "created"
-	StateStarting   State = "starting"
-	StateRunning    State = "running"
-	StatePausing    State = "pausing"
-	StatePaused     State = "paused"
-	StateResuming   State = "resuming"
-	StateStopping   State = "stopping"
-	StateStopped    State = "stopped"
-	StateError      State = "error"
+	StateCreated  State = "created"
+	StateStarting State = "starting"
+	StateRunning  State = "running"
+	StatePausing  State = "pausing"
+	StatePaused   State = "paused"
+	StateResuming State = "resuming"
+	StateStopping State = "stopping"
+	StateStopped  State = "stopped"
+	StateError    State = "error"
 )
 
 // Statistics holds pipeline statistics.
 type Statistics struct {
-	EventsRead     int64 `json:"eventsRead"`
-	EventsWritten  int64 `json:"eventsWritten"`
-	EventsFailed   int64 `json:"eventsFailed"`
-	BytesRead      int64 `json:"bytesRead"`
-	BytesWritten   int64 `json:"bytesWritten"`
-	CurrentLag     int64 `json:"currentLag"` // ms
-	LastEventTime  time.Time `json:"lastEventTime"`
+	EventsRead    int64     `json:"eventsRead"`
+	EventsWritten int64     `json:"eventsWritten"`
+	EventsFailed  int64     `json:"eventsFailed"`
+	BytesRead     int64     `json:"bytesRead"`
+	BytesWritten  int64     `json:"bytesWritten"`
+	CurrentLag    int64     `json:"currentLag"` // ms
+	LastEventTime time.Time `json:"lastEventTime"`
 }
 
 // New creates a new pipeline.

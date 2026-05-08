@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/your-org/datastream/pkg/event"
+	"github.com/UFOXD/datastream/pkg/event"
 )
 
 func TestSinkConfigValidation(t *testing.T) {

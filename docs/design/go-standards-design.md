@@ -544,7 +544,7 @@ func TestMySQLToMySQLSync(t *testing.T) {
 ### go.mod
 
 ```go
-module github.com/your-org/datastream
+module github.com/UFOXD/datastream
 
 go 1.21
 

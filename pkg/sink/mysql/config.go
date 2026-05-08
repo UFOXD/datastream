@@ -2,7 +2,7 @@
 package mysql
 
 import (
-	"github.com/your-org/datastream/pkg/sink"
+	"github.com/UFOXD/datastream/pkg/sink"
 )
 
 // Config holds MySQL-specific configuration.
@@ -15,10 +15,10 @@ type Config struct {
 	Database string `json:"database"`
 
 	// SSL settings
-	SSLMode     string `json:"sslMode"`
-	SSLCert     string `json:"sslCert"`
-	SSLKey      string `json:"sslKey"`
-	SSLCACert   string `json:"sslCaCert"`
+	SSLMode   string `json:"sslMode"`
+	SSLCert   string `json:"sslCert"`
+	SSLKey    string `json:"sslKey"`
+	SSLCACert string `json:"sslCaCert"`
 
 	// Connection pool
 	MaxConnections int `json:"maxConnections"`
@@ -27,18 +27,18 @@ type Config struct {
 
 	// Write settings
 	BatchSize      int    `json:"batchSize"`
-	InsertStrategy  string `json:"insertStrategy"` // insert, replace, upsert
+	InsertStrategy string `json:"insertStrategy"` // insert, replace, upsert
 	MaxRetries     int    `json:"maxRetries"`
 	RetryBackoff   int    `json:"retryBackoff"` // ms
 
 	// Transaction settings
-	UseTransaction bool `json:"useTransaction"`
+	UseTransaction bool   `json:"useTransaction"`
 	IsolationLevel string `json:"isolationLevel"`
 
 	// DDL settings
-	AutoCreateTable   bool   `json:"autoCreateTable"`
-	AutoAlterTable    bool   `json:"autoAlterTable"`
-	DDLPolicy         string `json:"ddlPolicy"` // ignore, apply, error
+	AutoCreateTable bool   `json:"autoCreateTable"`
+	AutoAlterTable  bool   `json:"autoAlterTable"`
+	DDLPolicy       string `json:"ddlPolicy"` // ignore, apply, error
 
 	// Batch config
 	Batch sink.BatchConfig `json:"batch"`

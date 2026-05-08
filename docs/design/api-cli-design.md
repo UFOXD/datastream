@@ -725,7 +725,7 @@ syntax = "proto3";
 
 package datastream.v1;
 
-option go_package = "github.com/your-org/datastream/api/grpc/v1;v1";
+option go_package = "github.com/UFOXD/datastream/api/grpc/v1;v1";
 
 // TaskService 任务服务
 service TaskService {

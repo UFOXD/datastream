@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/UFOXD/datastream/pkg/event"
 	"github.com/pingcap/log"
-	"github.com/your-org/datastream/pkg/event"
 	"go.uber.org/zap"
 )
 

@@ -4,7 +4,7 @@ package sink
 import (
 	"context"
 
-	"github.com/your-org/datastream/pkg/event"
+	"github.com/UFOXD/datastream/pkg/event"
 )
 
 // Connector defines the interface for a sink connector.
@@ -98,13 +98,13 @@ type ConnectionConfig struct {
 	Topic   string   `json:"topic,omitempty"`
 
 	// For Redis sinks
-	Addr           string `json:"addr,omitempty"`
-	RedisPassword  string `json:"redisPassword,omitempty"`
-	RedisDB        int    `json:"redisDb,omitempty"`
+	Addr          string `json:"addr,omitempty"`
+	RedisPassword string `json:"redisPassword,omitempty"`
+	RedisDB       int    `json:"redisDb,omitempty"`
 
 	// For Elasticsearch sinks
-	URLs []string `json:"urls,omitempty"`
-	Index string  `json:"index,omitempty"`
+	URLs  []string `json:"urls,omitempty"`
+	Index string   `json:"index,omitempty"`
 
 	// SSL/TLS configuration
 	SSLMode     string `json:"sslMode,omitempty"`
@@ -127,10 +127,10 @@ type BatchConfig struct {
 
 // RetryConfig configures retry behavior.
 type RetryConfig struct {
-	MaxRetries   int `json:"maxRetries"`   // Maximum number of retries
-	InitialWait  int `json:"initialWait"`  // Initial wait time in milliseconds
-	MaxWait      int `json:"maxWait"`      // Maximum wait time in milliseconds
-	Multiplier   float64 `json:"multiplier"` // Backoff multiplier
+	MaxRetries  int     `json:"maxRetries"`  // Maximum number of retries
+	InitialWait int     `json:"initialWait"` // Initial wait time in milliseconds
+	MaxWait     int     `json:"maxWait"`     // Maximum wait time in milliseconds
+	Multiplier  float64 `json:"multiplier"`  // Backoff multiplier
 }
 
 // Status represents the status of a sink connector.

@@ -8,8 +8,7 @@ DataStream is a Go-based CDC (Change Data Capture) platform that refactors Debez
 
 ## Current Status
 
-**Phase:** Phase 5 Completed  
-**Next Phase:** Phase 6 - Integration & Testing  
+**Phase:** Phase 6 In Progress  
 **Build Status:** PASSING  
 **Test Status:** PASSING (72 tests)
 
@@ -197,24 +196,36 @@ datastream/
 - **Packages:** 10
 - **Tests:** 72 (all passing)
 
-## Next Phase: Phase 6 - Integration & Testing
+### Phase 6: Integration & Testing 🔄
 
-### TODO
-1. **Integration Tests**
-   - End-to-end pipeline tests
-   - MySQL/PostgreSQL integration tests
-   - Kafka sink tests
+**Completed:**
+1. **Integration Test Framework** ✅
+   - `tests/integration/docker-compose.yml` - MySQL, PostgreSQL, Kafka, etcd
+   - `tests/integration/fixtures.go` - Test helpers and utilities
+   - `tests/integration/mysql_test.go` - MySQL integration tests
+   - `tests/integration/postgres_test.go` - PostgreSQL integration tests
+   - `tests/integration/etcd_test.go` - etcd integration tests
+   - `tests/integration/pipeline_test.go` - Pipeline integration tests
+   - `tests/integration/run.sh` - Test runner script
 
-2. **Documentation**
-   - API documentation (OpenAPI/Swagger)
-   - User guide
-   - Deployment guide
+2. **Graceful Shutdown** ✅
+   - `pkg/app/app.go` - Application lifecycle management
+   - Signal handling (SIGINT, SIGTERM, SIGHUP)
+   - Ordered component shutdown
+   - 30-second shutdown timeout
 
-3. **Production Readiness**
-   - Graceful shutdown
-   - Error recovery
-   - Monitoring dashboards
-   - Performance optimization
+3. **OpenAPI Documentation** ✅
+   - `docs/api/openapi.yaml` - OpenAPI 3.0 specification
+   - `docs/api/README.md` - API usage guide
+
+4. **E2E Tests** ✅
+   - `tests/e2e/e2e_test.go` - End-to-end test suite
+   - `tests/e2e/run.sh` - E2E test runner
+
+**Remaining:**
+- Performance optimization
+- Monitoring dashboards
+- Deployment guide
 
 ## Resume Instructions
 

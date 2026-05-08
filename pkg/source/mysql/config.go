@@ -4,7 +4,7 @@ package mysql
 import (
 	"time"
 
-	"github.com/your-org/datastream/pkg/source"
+	"github.com/UFOXD/datastream/pkg/source"
 )
 
 // Config holds MySQL-specific configuration.

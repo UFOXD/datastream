@@ -26,8 +26,8 @@
     "runtime": null
   },
   "build": {
-    "buildCommand": "go build ./... && go test ./... -v 2>&1 | grep -E \"^(ok|PASS|FAIL|---)\" | tail -50",
-    "testCommand": "go test ./... -v 2>&1 | grep -E \"^(ok|PASS|FAIL)\" | tail -20",
+    "buildCommand": "go build -tags=e2e ./tests/e2e/... 2>&1",
+    "testCommand": "go test ./... 2>&1 | tail -25",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {}
@@ -161,6 +161,18 @@
       "type": "file"
     },
     {
+      "path": "pkg/config/config.go",
+      "accessCount": 4,
+      "lastAccessed": 1778211871348,
+      "type": "file"
+    },
+    {
+      "path": "MEMORY.md",
+      "accessCount": 4,
+      "lastAccessed": 1778219854996,
+      "type": "file"
+    },
+    {
       "path": "pkg/source/mysql/connector.go",
       "accessCount": 3,
       "lastAccessed": 1778152418222,
@@ -185,6 +197,18 @@
       "type": "file"
     },
     {
+      "path": "pkg/coordinator/etcd.go",
+      "accessCount": 3,
+      "lastAccessed": 1778212829216,
+      "type": "file"
+    },
+    {
+      "path": "pkg/app/app.go",
+      "accessCount": 3,
+      "lastAccessed": 1778212858383,
+      "type": "file"
+    },
+    {
       "path": "pkg/source/connector.go",
       "accessCount": 2,
       "lastAccessed": 1778152407498,
@@ -197,15 +221,27 @@
       "type": "file"
     },
     {
-      "path": "pkg/coordinator/etcd.go",
-      "accessCount": 2,
-      "lastAccessed": 1778153470961,
-      "type": "file"
-    },
-    {
       "path": "pkg/cli/commands_test.go",
       "accessCount": 2,
       "lastAccessed": 1778154973745,
+      "type": "file"
+    },
+    {
+      "path": "go.mod",
+      "accessCount": 2,
+      "lastAccessed": 1778211145609,
+      "type": "file"
+    },
+    {
+      "path": "pkg/api/server.go",
+      "accessCount": 2,
+      "lastAccessed": 1778211751204,
+      "type": "file"
+    },
+    {
+      "path": "cmd/datastream/main.go",
+      "accessCount": 2,
+      "lastAccessed": 1778211888955,
       "type": "file"
     },
     {
@@ -236,12 +272,6 @@
       "path": "pkg/sink/errors.go",
       "accessCount": 1,
       "lastAccessed": 1778148861782,
-      "type": "file"
-    },
-    {
-      "path": "go.mod",
-      "accessCount": 1,
-      "lastAccessed": 1778152394997,
       "type": "file"
     },
     {
@@ -329,12 +359,6 @@
       "type": "file"
     },
     {
-      "path": "pkg/api/server.go",
-      "accessCount": 1,
-      "lastAccessed": 1778154193937,
-      "type": "file"
-    },
-    {
       "path": "pkg/api/errors.go",
       "accessCount": 1,
       "lastAccessed": 1778154194057,
@@ -353,9 +377,69 @@
       "type": "file"
     },
     {
-      "path": "MEMORY.md",
+      "path": "Makefile",
       "accessCount": 1,
-      "lastAccessed": 1778157891119,
+      "lastAccessed": 1778209337532,
+      "type": "file"
+    },
+    {
+      "path": "tests/integration/docker-compose.yml",
+      "accessCount": 1,
+      "lastAccessed": 1778209425422,
+      "type": "file"
+    },
+    {
+      "path": "tests/integration/fixtures.go",
+      "accessCount": 1,
+      "lastAccessed": 1778209425551,
+      "type": "file"
+    },
+    {
+      "path": "tests/integration/mysql_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1778209425666,
+      "type": "file"
+    },
+    {
+      "path": "tests/integration/postgres_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1778209481961,
+      "type": "file"
+    },
+    {
+      "path": "tests/integration/etcd_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1778209482088,
+      "type": "file"
+    },
+    {
+      "path": "tests/integration/run.sh",
+      "accessCount": 1,
+      "lastAccessed": 1778209482235,
+      "type": "file"
+    },
+    {
+      "path": "tests/integration/pipeline_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1778211635406,
+      "type": "file"
+    },
+    {
+      "path": "pkg",
+      "accessCount": 1,
+      "lastAccessed": 1778212818296,
+      "type": "directory"
+    },
+    {
+      "path": "docs/api/openapi.yaml",
+      "accessCount": 1,
+      "lastAccessed": 1778213035946,
+      "type": "file"
+    },
+    {
+      "path": "docs/api/README.md",
+      "accessCount": 1,
+      "lastAccessed": 1778213072255,
       "type": "file"
     }
   ],

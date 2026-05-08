@@ -6,34 +6,51 @@ import (
 	"os"
 	"strings"
 
+	"github.com/UFOXD/datastream/pkg/logutil"
 	"github.com/pelletier/go-toml/v2"
-	"github.com/your-org/datastream/pkg/logutil"
 )
 
 // Config is the root configuration for DataStream.
 type Config struct {
-	Name       string             `toml:"name" json:"name"`
-	Server     ServerConfig       `toml:"server" json:"server"`
-	Log        logutil.LogConfig  `toml:"log" json:"log"`
+	Name        string            `toml:"name" json:"name"`
+	Server      ServerConfig      `toml:"server" json:"server"`
+	Log         logutil.LogConfig `toml:"log" json:"log"`
 	Coordinator CoordinatorConfig `toml:"coordinator" json:"coordinator"`
-	Security   SecurityConfig     `toml:"security" json:"security"`
+	Security    SecurityConfig    `toml:"security" json:"security"`
 }
 
 // ServerConfig holds server-related configuration.
 type ServerConfig struct {
 	Addr          string `toml:"addr" json:"addr"`
 	APIAddr       string `toml:"api-addr" json:"api-addr"`
+	HTTPAddr      string `toml:"http-addr" json:"http-addr"`
 	AdvertiseAddr string `toml:"advertise-addr" json:"advertise-addr"`
 	DataDir       string `toml:"data-dir" json:"data-dir"`
 	GCTTL         int64  `toml:"gc-ttl" json:"gc-ttl"`
+	ReadTimeout   int    `toml:"read-timeout" json:"read-timeout"`
+	WriteTimeout  int    `toml:"write-timeout" json:"write-timeout"`
+	IdleTimeout   int    `toml:"idle-timeout" json:"idle-timeout"`
 }
 
 // CoordinatorConfig holds coordinator backend configuration.
 type CoordinatorConfig struct {
-	Backend         string   `toml:"backend" json:"backend"`
-	Endpoints       []string `toml:"endpoints" json:"endpoints"`
-	SessionTTL      int      `toml:"session-ttl" json:"session-ttl"`
-	ElectionTimeout int      `toml:"election-timeout" json:"election-timeout"`
+	Type            string     `toml:"type" json:"type"`
+	Backend         string     `toml:"backend" json:"backend"`
+	Endpoints       []string   `toml:"endpoints" json:"endpoints"`
+	SessionTTL      int        `toml:"session-ttl" json:"session-ttl"`
+	ElectionTimeout int        `toml:"election-timeout" json:"election-timeout"`
+	Etcd            EtcdConfig `toml:"etcd" json:"etcd"`
+}
+
+// EtcdConfig holds etcd-specific configuration.
+type EtcdConfig struct {
+	Endpoints   []string `toml:"endpoints" json:"endpoints"`
+	DialTimeout int      `toml:"dial-timeout" json:"dial-timeout"`
+	Username    string   `toml:"username" json:"username"`
+	Password    string   `toml:"password" json:"password"`
+	TLSCA       string   `toml:"tls-ca" json:"tls-ca"`
+	TLSCert     string   `toml:"tls-cert" json:"tls-cert"`
+	TLSKey      string   `toml:"tls-key" json:"tls-key"`
 }
 
 // SecurityConfig holds security/TLS configuration.
@@ -46,16 +63,16 @@ type SecurityConfig struct {
 
 // Default values.
 const (
-	defaultAddr              = ":8300"
-	defaultAPIAddr           = ":8301"
-	defaultLogLevel          = "info"
-	defaultLogMaxSize        = 512 // MB
-	defaultLogMaxDays        = 7
-	defaultDataDir           = "./data"
-	defaultGCTTL             = 86400 // 24 hours
+	defaultAddr               = ":8300"
+	defaultAPIAddr            = ":8301"
+	defaultLogLevel           = "info"
+	defaultLogMaxSize         = 512 // MB
+	defaultLogMaxDays         = 7
+	defaultDataDir            = "./data"
+	defaultGCTTL              = 86400 // 24 hours
 	defaultCoordinatorBackend = "etcd"
-	defaultSessionTTL        = 10
-	defaultElectionTimeout   = 5000
+	defaultSessionTTL         = 10
+	defaultElectionTimeout    = 5000
 )
 
 // Adjust fills in default values for empty fields.
@@ -66,11 +83,23 @@ func (c *Config) Adjust() {
 	if c.Server.APIAddr == "" {
 		c.Server.APIAddr = defaultAPIAddr
 	}
+	if c.Server.HTTPAddr == "" {
+		c.Server.HTTPAddr = defaultAddr
+	}
 	if c.Server.DataDir == "" {
 		c.Server.DataDir = defaultDataDir
 	}
 	if c.Server.GCTTL == 0 {
 		c.Server.GCTTL = defaultGCTTL
+	}
+	if c.Server.ReadTimeout == 0 {
+		c.Server.ReadTimeout = 30
+	}
+	if c.Server.WriteTimeout == 0 {
+		c.Server.WriteTimeout = 30
+	}
+	if c.Server.IdleTimeout == 0 {
+		c.Server.IdleTimeout = 120
 	}
 
 	if c.Log.Level == "" {
@@ -89,6 +118,9 @@ func (c *Config) Adjust() {
 		c.Log.MaxBackups = 3
 	}
 
+	if c.Coordinator.Type == "" {
+		c.Coordinator.Type = defaultCoordinatorBackend
+	}
 	if c.Coordinator.Backend == "" {
 		c.Coordinator.Backend = defaultCoordinatorBackend
 	}
@@ -97,6 +129,12 @@ func (c *Config) Adjust() {
 	}
 	if c.Coordinator.ElectionTimeout == 0 {
 		c.Coordinator.ElectionTimeout = defaultElectionTimeout
+	}
+	if len(c.Coordinator.Etcd.Endpoints) == 0 && len(c.Coordinator.Endpoints) > 0 {
+		c.Coordinator.Etcd.Endpoints = c.Coordinator.Endpoints
+	}
+	if c.Coordinator.Etcd.DialTimeout == 0 {
+		c.Coordinator.Etcd.DialTimeout = 5
 	}
 }
 

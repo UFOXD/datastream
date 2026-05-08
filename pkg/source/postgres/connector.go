@@ -5,23 +5,23 @@ import (
 	"sync"
 	"time"
 
+	"github.com/UFOXD/datastream/pkg/event"
+	"github.com/UFOXD/datastream/pkg/source"
 	"github.com/pingcap/log"
-	"github.com/your-org/datastream/pkg/event"
-	"github.com/your-org/datastream/pkg/source"
 	"go.uber.org/zap"
 )
 
 // Connector implements the source.Connector interface for PostgreSQL.
 type Connector struct {
-	config       *Config
-	status       source.Status
-	position     *event.Position
-	events       chan *event.ChangeEvent
-	errors       chan error
-	stopCh       chan struct{}
-	wg           sync.WaitGroup
-	mu           sync.RWMutex
-	schemaCache  map[string]*event.TableInfo
+	config      *Config
+	status      source.Status
+	position    *event.Position
+	events      chan *event.ChangeEvent
+	errors      chan error
+	stopCh      chan struct{}
+	wg          sync.WaitGroup
+	mu          sync.RWMutex
+	schemaCache map[string]*event.TableInfo
 }
 
 // New creates a new PostgreSQL source connector.
