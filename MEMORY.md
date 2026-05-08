@@ -1,6 +1,6 @@
 # DataStream Project Memory
 
-> Last Updated: 2026-05-07
+> Last Updated: 2026-05-08
 
 ## Project Overview
 
@@ -8,7 +8,8 @@ DataStream is a Go-based CDC (Change Data Capture) platform that refactors Debez
 
 ## Current Status
 
-**Phase:** Phase 6 In Progress  
+**Phase:** Phase 6 In Progress (Connector Implementation)  
+**Branch:** `feature/phase6-benchmarks-deployment`  
 **Build Status:** PASSING  
 **Test Status:** PASSING (72 tests)
 
@@ -20,6 +21,9 @@ DataStream is a Go-based CDC (Change Data Capture) platform that refactors Debez
 | `e82737a` | 3 | Pipeline layer (Task, Dispatcher, Buffer) |
 | `1068daf` | 4 | Coordinator layer with etcd support |
 | `353de9e` | 5 | API & CLI layer |
+| `43ea879` | 6 | Update mod path to github.com/UFOXD/datastream |
+| `99ac50a` | 6 | Add Phase 6 benchmarks and deployment docs |
+| `62913e1` | 6 | Implement MySQL sink and Kafka sink connectors |
 
 ## Completed Phases
 
@@ -61,8 +65,8 @@ type Connector interface {
 ```
 
 **Source Connectors:**
-- `pkg/source/mysql/` - MySQL binlog replication skeleton
-- `pkg/source/postgres/` - PostgreSQL logical replication skeleton
+- `pkg/source/mysql/` - MySQL binlog replication (skeleton → needs implementation)
+- `pkg/source/postgres/` - PostgreSQL logical replication (skeleton → needs implementation)
 
 **Sink Interface** (`pkg/sink/connector.go`):
 ```go
@@ -81,8 +85,8 @@ type Connector interface {
 ```
 
 **Sink Connectors:**
-- `pkg/sink/kafka/` - Kafka producer skeleton
-- `pkg/sink/mysql/` - MySQL writer skeleton
+- `pkg/sink/kafka/` - Kafka producer ✅ IMPLEMENTED
+- `pkg/sink/mysql/` - MySQL writer ✅ IMPLEMENTED
 
 ### Phase 3: Pipeline Layer ✅
 
@@ -143,62 +147,10 @@ datastream-ctl node list
 datastream-ctl version
 ```
 
-## Dependencies
+### Phase 6: Integration & Implementation 🔄
 
-```go
-require (
-    github.com/pelletier/go-toml/v2 v2.1.0
-    github.com/pingcap/errors v0.11.5-0.20211224045212-9687c2b0f87c
-    github.com/pingcap/log v1.1.0
-    github.com/prometheus/client_golang v1.17.0
-    go.uber.org/zap v1.26.0
-    go.etcd.io/etcd/client/v3 v3.5.9
-    github.com/gorilla/mux v1.8.1
-    github.com/spf13/cobra v1.8.0
-)
-```
+#### Completed:
 
-## Project Structure
-
-```
-datastream/
-├── cmd/
-│   ├── datastream/main.go          # Main server
-│   └── datastream-ctl/main.go      # CLI tool
-├── pkg/
-│   ├── api/                        # HTTP REST API
-│   ├── cli/                        # Cobra CLI commands
-│   ├── config/                     # Configuration
-│   ├── coordinator/                # etcd coordinator
-│   ├── errors/                     # RFC error codes
-│   ├── event/                      # Event model
-│   ├── logutil/                    # Logging
-│   ├── metrics/                    # Prometheus metrics
-│   ├── pipeline/                   # Pipeline, Task, Dispatcher, Buffer
-│   ├── sink/                       # Sink connectors
-│   │   ├── kafka/
-│   │   └── mysql/
-│   ├── source/                     # Source connectors
-│   │   ├── mysql/
-│   │   └── postgres/
-│   ├── utils/                      # Utilities
-│   └── version/                    # Version info
-├── configs/datastream.toml         # Sample config
-├── docs/design/                    # Design documents
-├── Makefile
-├── go.mod
-└── go.sum
-```
-
-## Statistics
-
-- **Go Files:** 56
-- **Packages:** 10
-- **Tests:** 72 (all passing)
-
-### Phase 6: Integration & Testing 🔄
-
-**Completed:**
 1. **Integration Test Framework** ✅
    - `tests/integration/docker-compose.yml` - MySQL, PostgreSQL, Kafka, etcd
    - `tests/integration/fixtures.go` - Test helpers and utilities
@@ -222,10 +174,111 @@ datastream/
    - `tests/e2e/e2e_test.go` - End-to-end test suite
    - `tests/e2e/run.sh` - E2E test runner
 
-**Remaining:**
-- Performance optimization
-- Monitoring dashboards
-- Deployment guide
+5. **Performance Benchmarks** ✅
+   - `pkg/event/benchmark_test.go` - Event model benchmarks
+   - `pkg/pipeline/benchmark_test.go` - Buffer/Coordinator benchmarks
+
+6. **Deployment Guide** ✅
+   - `Dockerfile` - Container image definition
+   - `docs/deployment/README.md` - Docker/Kubernetes deployment
+
+7. **MySQL Sink Implementation** ✅
+   - Database connection with connection pool
+   - INSERT/UPDATE/DELETE query execution
+   - Transaction support
+   - DDL execution
+   - Upsert/Replace/Insert strategies
+
+8. **Kafka Sink Implementation** ✅
+   - Kafka producer using segmentio/kafka-go
+   - Compression support (gzip, snappy, lz4, zstd)
+   - Topic naming strategies
+   - Partition key configuration
+
+#### In Progress:
+
+9. **MySQL Binlog Streaming** 🔄
+   - Need to integrate go-mysql-org/go-mysql
+   - Handle binlog events (QUERY, TABLE_MAP, WRITE_ROWS, etc.)
+   - Position tracking
+
+10. **PostgreSQL Logical Replication** 🔄
+    - Need to integrate jackc/pglogrepl
+    - Handle WAL events via pgoutput
+    - LSN position tracking
+
+## Dependencies
+
+```go
+require (
+    github.com/pelletier/go-toml/v2 v2.1.0
+    github.com/pingcap/errors v0.11.5-0.20211224045212-9687c2b0f87c
+    github.com/pingcap/log v1.1.0
+    github.com/prometheus/client_golang v1.17.0
+    go.uber.org/zap v1.26.0
+    go.etcd.io/etcd/client/v3 v3.5.9
+    github.com/gorilla/mux v1.8.1
+    github.com/spf13/cobra v1.8.0
+    github.com/go-sql-driver/mysql v1.10.0
+    github.com/lib/pq v1.12.3
+    github.com/segmentio/kafka-go v0.4.51
+)
+```
+
+## Project Structure
+
+```
+datastream/
+├── cmd/
+│   ├── datastream/main.go          # Main server
+│   └── datastream-ctl/main.go      # CLI tool
+├── pkg/
+│   ├── api/                        # HTTP REST API
+│   ├── app/                        # Application lifecycle
+│   ├── cli/                        # Cobra CLI commands
+│   ├── config/                     # Configuration
+│   ├── coordinator/                # etcd coordinator
+│   ├── errors/                     # RFC error codes
+│   ├── event/                      # Event model
+│   ├── logutil/                    # Logging
+│   ├── metrics/                    # Prometheus metrics
+│   ├── pipeline/                   # Pipeline, Task, Dispatcher, Buffer
+│   ├── sink/                       # Sink connectors
+│   │   ├── kafka/                  # ✅ Implemented
+│   │   └── mysql/                  # ✅ Implemented
+│   ├── source/                     # Source connectors
+│   │   ├── mysql/                  # 🔄 Needs implementation
+│   │   └── postgres/               # 🔄 Needs implementation
+│   ├── utils/                      # Utilities
+│   └── version/                    # Version info
+├── tests/
+│   ├── integration/                # Integration tests
+│   └── e2e/                        # End-to-end tests
+├── docs/
+│   ├── api/                        # OpenAPI docs
+│   ├── deployment/                 # Deployment guide
+│   └── design/                     # Design documents
+├── configs/datastream.toml         # Sample config
+├── Dockerfile                      # Container definition
+├── Makefile
+├── go.mod
+└── go.sum
+```
+
+## Statistics
+
+- **Go Files:** 60+
+- **Packages:** 12
+- **Tests:** 72 (all passing)
+
+## Benchmark Results (Apple M5)
+
+| Benchmark | Latency | Allocs |
+|-----------|---------|--------|
+| MemoryBuffer Put | 12.76 ns/op | 0 |
+| MemoryBuffer Get | 110 ns/op | 1 |
+| Event Creation | 29 ns/op | 0 |
+| Position Clone | 0.23 ns/op | 0 |
 
 ## Resume Instructions
 
@@ -235,13 +288,14 @@ To continue in a new session:
 # 1. Read this file
 cat MEMORY.md
 
-# 2. Check git history
+# 2. Check git history and current branch
 git log --oneline
+git branch
 
 # 3. Verify build and tests
 go build ./... && go test ./...
 
-# 4. Continue with Phase 6
+# 4. Continue with remaining connector implementations
 ```
 
 ## Key Patterns
@@ -250,3 +304,12 @@ go build ./... && go test ./...
 - **Channel-based:** Event streaming via Go channels
 - **Context-aware:** Cancellation and timeout support
 - **Interface-based:** Pluggable components
+
+## Next Steps
+
+1. Add `github.com/go-mysql-org/go-mysql` dependency
+2. Implement MySQL binlog streaming in `pkg/source/mysql/connector.go`
+3. Add `github.com/jackc/pglogrepl` dependency
+4. Implement PostgreSQL logical replication in `pkg/source/postgres/connector.go`
+5. Add unit tests for sink connectors
+6. Create PR to merge into `dev` branch
