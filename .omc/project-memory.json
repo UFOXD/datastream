@@ -26,8 +26,8 @@
     "runtime": null
   },
   "build": {
-    "buildCommand": "go build -tags=e2e ./tests/e2e/... 2>&1",
-    "testCommand": "go test ./... 2>&1 | tail -25",
+    "buildCommand": "go build ./... 2>&1 && go test -bench=. -benchmem -run=^$ ./pkg/... 2>&1 | head -30",
+    "testCommand": "go test -bench=. -benchmem -run=^$ ./pkg/event/... ./pkg/pipeline/... 2>&1",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {}
@@ -245,6 +245,30 @@
       "type": "file"
     },
     {
+      "path": "pkg/pipeline/buffer.go",
+      "accessCount": 2,
+      "lastAccessed": 1778225282644,
+      "type": "file"
+    },
+    {
+      "path": "pkg/event/change_event.go",
+      "accessCount": 2,
+      "lastAccessed": 1778225282699,
+      "type": "file"
+    },
+    {
+      "path": "pkg/event/row_data.go",
+      "accessCount": 2,
+      "lastAccessed": 1778227157016,
+      "type": "file"
+    },
+    {
+      "path": "pkg/pipeline/task.go",
+      "accessCount": 2,
+      "lastAccessed": 1778227157073,
+      "type": "file"
+    },
+    {
       "path": "",
       "accessCount": 1,
       "lastAccessed": 1778148809113,
@@ -254,12 +278,6 @@
       "path": "pkg/event/position.go",
       "accessCount": 1,
       "lastAccessed": 1778148809164,
-      "type": "file"
-    },
-    {
-      "path": "pkg/event/change_event.go",
-      "accessCount": 1,
-      "lastAccessed": 1778148809219,
       "type": "file"
     },
     {
@@ -293,12 +311,6 @@
       "type": "file"
     },
     {
-      "path": "pkg/event/row_data.go",
-      "accessCount": 1,
-      "lastAccessed": 1778152743951,
-      "type": "file"
-    },
-    {
       "path": "pkg/source/connector_test.go",
       "accessCount": 1,
       "lastAccessed": 1778152838510,
@@ -320,18 +332,6 @@
       "path": "pkg/pipeline/errors.go",
       "accessCount": 1,
       "lastAccessed": 1778152925945,
-      "type": "file"
-    },
-    {
-      "path": "pkg/pipeline/buffer.go",
-      "accessCount": 1,
-      "lastAccessed": 1778152963503,
-      "type": "file"
-    },
-    {
-      "path": "pkg/pipeline/task.go",
-      "accessCount": 1,
-      "lastAccessed": 1778153121665,
       "type": "file"
     },
     {
