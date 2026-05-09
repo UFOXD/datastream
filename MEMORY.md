@@ -26,6 +26,7 @@ DataStream is a Go-based CDC (Change Data Capture) platform that refactors Debez
 | `62913e1` | 6 | Implement MySQL sink and Kafka sink connectors |
 | `274b182` | 6 | Implement MySQL binlog streaming source connector |
 | `8bfc699` | 6 | Implement PostgreSQL logical replication source connector |
+| `64fc5c0` | 6 | Add unit tests for all connectors |
 
 ## Completed Phases
 
@@ -272,9 +273,9 @@ datastream/
 
 ## Statistics
 
-- **Go Files:** 60+
+- **Go Files:** 65+
 - **Packages:** 12
-- **Tests:** 72 (all passing)
+- **Tests:** All passing (including new connector unit tests)
 
 ## Benchmark Results (Apple M5)
 
