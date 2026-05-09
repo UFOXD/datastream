@@ -184,3 +184,59 @@ func TestContextCancellation(t *testing.T) {
 		t.Error("Context should be done after timeout")
 	}
 }
+
+// mockSource is a mock implementation of Connector for testing
+type mockSource struct {
+	name   string
+	events chan *event.ChangeEvent
+	errors chan error
+}
+
+func (m *mockSource) Name() string                                           { return m.name }
+func (m *mockSource) Initialize(ctx context.Context, config Config) error   { return nil }
+func (m *mockSource) Start(ctx context.Context) error                       { return nil }
+func (m *mockSource) Stop(ctx context.Context) error                        { return nil }
+func (m *mockSource) Status() Status                                         { return Status{State: StateRunning} }
+func (m *mockSource) Events() <-chan *event.ChangeEvent                     { return m.events }
+func (m *mockSource) Errors() <-chan error                                   { return m.errors }
+func (m *mockSource) GetPosition() *event.Position                           { return nil }
+func (m *mockSource) SetPosition(pos *event.Position) error                 { return nil }
+func (m *mockSource) GetSchema(database, table string) (*event.TableInfo, error) {
+	return nil, nil
+}
+
+type mockSourceFactory struct{}
+
+func (f *mockSourceFactory) Create(config Config) (Connector, error) {
+	return &mockSource{
+		name:   config.Type,
+		events: make(chan *event.ChangeEvent),
+		errors: make(chan error),
+	}, nil
+}
+
+func TestRegisterAndCreateSource(t *testing.T) {
+	// Register a mock factory
+	Register("mock-source", &mockSourceFactory{})
+
+	// Create should return a connector
+	conn, err := Create("mock-source", Config{Type: "mock-source"})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	if conn == nil {
+		t.Fatal("Connector should not be nil")
+	}
+
+	if conn.Name() != "mock-source" {
+		t.Errorf("Expected name 'mock-source', got '%s'", conn.Name())
+	}
+}
+
+func TestCreateUnsupportedSource(t *testing.T) {
+	_, err := Create("nonexistent-source", Config{Type: "nonexistent-source"})
+	if err != ErrUnsupportedConnector {
+		t.Errorf("Expected ErrUnsupportedConnector, got %v", err)
+	}
+}

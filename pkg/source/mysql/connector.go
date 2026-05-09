@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/UFOXD/datastream/pkg/event"
+	"github.com/UFOXD/datastream/pkg/offset"
 	"github.com/UFOXD/datastream/pkg/source"
 	"github.com/go-mysql-org/go-mysql/canal"
 	"github.com/go-mysql-org/go-mysql/mysql"
@@ -36,6 +37,10 @@ type Connector struct {
 
 	// Current binlog file
 	currentBinlog string
+
+	// Offset storage
+	offsetStorage offset.Storage
+	taskID        string
 }
 
 // New creates a new MySQL source connector.
@@ -105,10 +110,32 @@ func (c *Connector) Initialize(ctx context.Context, config source.Config) error 
 
 	c.db = db
 
-	// Initialize position if provided
-	if config.Offset.Path != "" {
-		log.Info("loading position from offset storage", zap.String("path", config.Offset.Path))
-		// TODO: Load position from offset storage
+	// Initialize offset storage
+	if config.Offset.Backend != "" {
+		offsetCfg := &offset.Config{
+			Backend:       config.Offset.Backend,
+			Path:          config.Offset.Path,
+			FlushInterval: config.Offset.FlushInterval,
+		}
+		storage, err := offset.NewStorage(offsetCfg)
+		if err != nil {
+			return fmt.Errorf("failed to create offset storage: %w", err)
+		}
+		c.offsetStorage = storage
+		c.taskID = config.Type // Use connector type as task ID if not specified
+
+		// Load position from offset storage
+		if pos, err := storage.Load(ctx, c.taskID); err != nil {
+			log.Warn("failed to load position from offset storage",
+				zap.String("taskId", c.taskID),
+				zap.Error(err))
+		} else if pos != nil {
+			c.position = pos
+			c.currentBinlog = pos.BinlogFile
+			log.Info("loaded position from offset storage",
+				zap.String("binlogFile", pos.BinlogFile),
+				zap.Uint32("binlogPos", pos.BinlogPos))
+		}
 	}
 
 	// Set initial binlog file if configured
@@ -210,6 +237,18 @@ func (c *Connector) Stop(ctx context.Context) error {
 
 	c.wg.Wait()
 
+	// Save final position to offset storage
+	if c.offsetStorage != nil && c.position != nil {
+		if err := c.offsetStorage.Save(ctx, c.taskID, c.position); err != nil {
+			log.Warn("failed to save final position to offset storage", zap.Error(err))
+		}
+	}
+
+	// Close offset storage
+	if c.offsetStorage != nil {
+		c.offsetStorage.Close()
+	}
+
 	log.Info("MySQL connector stopped")
 	return nil
 }
@@ -246,6 +285,14 @@ func (c *Connector) SetPosition(pos *event.Position) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.position = pos.Clone()
+
+	// Save to offset storage
+	if c.offsetStorage != nil {
+		ctx := context.Background()
+		if err := c.offsetStorage.Save(ctx, c.taskID, c.position); err != nil {
+			log.Warn("failed to save position to offset storage", zap.Error(err))
+		}
+	}
 	return nil
 }
 

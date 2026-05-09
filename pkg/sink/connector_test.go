@@ -234,3 +234,58 @@ func TestSinkContextCancellation(t *testing.T) {
 		t.Error("Goroutine should have finished by now")
 	}
 }
+
+// mockSink is a mock implementation of Connector for testing
+type mockSink struct {
+	name string
+}
+
+func (m *mockSink) Name() string                                         { return m.name }
+func (m *mockSink) Initialize(ctx context.Context, config Config) error { return nil }
+func (m *mockSink) Start(ctx context.Context) error                     { return nil }
+func (m *mockSink) Stop(ctx context.Context) error                      { return nil }
+func (m *mockSink) Status() Status {
+	return Status{State: StateReady}
+}
+func (m *mockSink) Write(ctx context.Context, events []*event.ChangeEvent) error {
+	return nil
+}
+func (m *mockSink) Flush(ctx context.Context) error          { return nil }
+func (m *mockSink) GetPosition() *event.Position             { return nil }
+func (m *mockSink) SupportsDDL() bool                        { return false }
+func (m *mockSink) SupportsTransaction() bool                { return false }
+func (m *mockSink) WriteBatch(ctx context.Context, events []*event.ChangeEvent, batchSize int) error {
+	return nil
+}
+
+type mockFactory struct{}
+
+func (f *mockFactory) Create(config Config) (Connector, error) {
+	return &mockSink{name: config.Type}, nil
+}
+
+func TestRegisterAndCreate(t *testing.T) {
+	// Register a mock factory
+	Register("mock-sink", &mockFactory{})
+
+	// Create should return a connector
+	conn, err := Create("mock-sink", Config{Type: "mock-sink"})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	if conn == nil {
+		t.Fatal("Connector should not be nil")
+	}
+
+	if conn.Name() != "mock-sink" {
+		t.Errorf("Expected name 'mock-sink', got '%s'", conn.Name())
+	}
+}
+
+func TestCreateUnsupportedConnector(t *testing.T) {
+	_, err := Create("nonexistent", Config{Type: "nonexistent"})
+	if err != ErrUnsupportedConnector {
+		t.Errorf("Expected ErrUnsupportedConnector, got %v", err)
+	}
+}
