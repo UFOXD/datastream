@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/UFOXD/datastream/pkg/coordinator"
+	"github.com/UFOXD/datastream/internal/coordinator"
 	"github.com/UFOXD/datastream/pkg/event"
-	"github.com/UFOXD/datastream/pkg/pipeline"
+	"github.com/UFOXD/datastream/internal/pipeline"
 )
 
 func TestEtcdCoordinatorLifecycle(t *testing.T) {

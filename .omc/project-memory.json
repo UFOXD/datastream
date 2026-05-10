@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1778148747048,
+  "lastScanned": 1778410378332,
   "projectRoot": "/Users/peter/Codes/dts/datastream",
   "techStack": {
     "languages": [
@@ -26,8 +26,8 @@
     "runtime": null
   },
   "build": {
-    "buildCommand": "go build ./pkg/sink/kafka/... 2>&1",
-    "testCommand": "go test ./... 2>&1 | tail -20",
+    "buildCommand": "go build ./... 2>&1 | head -50",
+    "testCommand": "go test ./... -short 2>&1 | tail -20",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {}
@@ -55,7 +55,7 @@
       "path": "bin",
       "purpose": "Executable scripts",
       "fileCount": 2,
-      "lastAccessed": 1778148747019,
+      "lastAccessed": 1778410378300,
       "keyFiles": [
         "datastream",
         "datastream-ctl"
@@ -65,14 +65,14 @@
       "path": "cmd",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1778148747019,
+      "lastAccessed": 1778410378300,
       "keyFiles": []
     },
     "configs": {
       "path": "configs",
       "purpose": null,
       "fileCount": 1,
-      "lastAccessed": 1778148747019,
+      "lastAccessed": 1778410378300,
       "keyFiles": [
         "datastream.toml"
       ]
@@ -81,365 +81,385 @@
       "path": "docs",
       "purpose": "Documentation",
       "fileCount": 0,
-      "lastAccessed": 1778148747019,
+      "lastAccessed": 1778410378300,
       "keyFiles": []
     },
     "internal": {
       "path": "internal",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1778148747019,
+      "lastAccessed": 1778410378300,
       "keyFiles": []
     },
     "pkg": {
       "path": "pkg",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1778148747019,
+      "lastAccessed": 1778410378300,
       "keyFiles": []
     },
     "proto": {
       "path": "proto",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1778148747020,
+      "lastAccessed": 1778410378301,
       "keyFiles": []
     },
     "scripts": {
       "path": "scripts",
       "purpose": "Build/utility scripts",
       "fileCount": 0,
-      "lastAccessed": 1778148747020,
+      "lastAccessed": 1778410378301,
       "keyFiles": []
     },
     "tests": {
       "path": "tests",
       "purpose": "Test files",
       "fileCount": 0,
-      "lastAccessed": 1778148747020,
+      "lastAccessed": 1778410378301,
       "keyFiles": []
+    },
+    "docs/api": {
+      "path": "docs/api",
+      "purpose": "API routes",
+      "fileCount": 2,
+      "lastAccessed": 1778410378301,
+      "keyFiles": [
+        "README.md",
+        "openapi.yaml"
+      ]
+    },
+    "pkg/api": {
+      "path": "pkg/api",
+      "purpose": "API routes",
+      "fileCount": 3,
+      "lastAccessed": 1778410378301,
+      "keyFiles": [
+        "errors.go",
+        "server.go",
+        "server_test.go"
+      ]
+    },
+    "pkg/app": {
+      "path": "pkg/app",
+      "purpose": "Application code",
+      "fileCount": 2,
+      "lastAccessed": 1778410378301,
+      "keyFiles": [
+        "app.go",
+        "app_test.go"
+      ]
     },
     "pkg/config": {
       "path": "pkg/config",
       "purpose": "Configuration files",
       "fileCount": 2,
-      "lastAccessed": 1778148747020,
+      "lastAccessed": 1778410378302,
       "keyFiles": [
         "config.go",
         "config_test.go"
-      ]
-    },
-    "pkg/utils": {
-      "path": "pkg/utils",
-      "purpose": "Utility functions",
-      "fileCount": 5,
-      "lastAccessed": 1778148747021,
-      "keyFiles": [
-        "hash.go",
-        "pool.go",
-        "retry.go"
       ]
     }
   },
   "hotPaths": [
     {
-      "path": "pkg/sink/mysql/connector.go",
-      "accessCount": 6,
-      "lastAccessed": 1778229170338,
-      "type": "file"
-    },
-    {
-      "path": "pkg/coordinator/coordinator_test.go",
-      "accessCount": 5,
-      "lastAccessed": 1778153585216,
-      "type": "file"
-    },
-    {
-      "path": "pkg/sink/connector.go",
-      "accessCount": 5,
-      "lastAccessed": 1778227798718,
-      "type": "file"
-    },
-    {
-      "path": "pkg/sink/kafka/connector.go",
-      "accessCount": 5,
-      "lastAccessed": 1778231241495,
-      "type": "file"
-    },
-    {
-      "path": "pkg/pipeline/dispatcher.go",
-      "accessCount": 4,
-      "lastAccessed": 1778153201104,
-      "type": "file"
-    },
-    {
-      "path": "pkg/config/config.go",
-      "accessCount": 4,
-      "lastAccessed": 1778211871348,
-      "type": "file"
-    },
-    {
       "path": "MEMORY.md",
-      "accessCount": 4,
-      "lastAccessed": 1778219854996,
+      "accessCount": 29,
+      "lastAccessed": 1778423207853,
       "type": "file"
     },
     {
-      "path": "pkg/source/mysql/connector.go",
-      "accessCount": 4,
-      "lastAccessed": 1778227496224,
+      "path": "docs/design/parser-design.md",
+      "accessCount": 27,
+      "lastAccessed": 1778420105906,
       "type": "file"
     },
     {
-      "path": "pkg/source/postgres/connector.go",
-      "accessCount": 4,
-      "lastAccessed": 1778227496275,
-      "type": "file"
-    },
-    {
-      "path": "pkg/source/postgres/config.go",
-      "accessCount": 4,
-      "lastAccessed": 1778227792309,
-      "type": "file"
-    },
-    {
-      "path": "pkg/coordinator/etcd.go",
-      "accessCount": 3,
-      "lastAccessed": 1778212829216,
-      "type": "file"
-    },
-    {
-      "path": "pkg/app/app.go",
-      "accessCount": 3,
-      "lastAccessed": 1778212858383,
-      "type": "file"
-    },
-    {
-      "path": "pkg/pipeline/buffer.go",
-      "accessCount": 3,
-      "lastAccessed": 1778227502152,
-      "type": "file"
-    },
-    {
-      "path": "pkg/source/mysql/config.go",
-      "accessCount": 3,
-      "lastAccessed": 1778227792363,
-      "type": "file"
-    },
-    {
-      "path": "pkg/source/connector.go",
-      "accessCount": 3,
-      "lastAccessed": 1778227798771,
-      "type": "file"
-    },
-    {
-      "path": "pkg/sink/mysql/config.go",
-      "accessCount": 3,
-      "lastAccessed": 1778229096887,
-      "type": "file"
-    },
-    {
-      "path": "pkg/sink/kafka/config.go",
-      "accessCount": 3,
-      "lastAccessed": 1778229520090,
-      "type": "file"
-    },
-    {
-      "path": "pkg/cli/commands_test.go",
-      "accessCount": 2,
-      "lastAccessed": 1778154973745,
-      "type": "file"
-    },
-    {
-      "path": "go.mod",
-      "accessCount": 2,
-      "lastAccessed": 1778211145609,
-      "type": "file"
-    },
-    {
-      "path": "pkg/api/server.go",
-      "accessCount": 2,
-      "lastAccessed": 1778211751204,
-      "type": "file"
-    },
-    {
-      "path": "cmd/datastream/main.go",
-      "accessCount": 2,
-      "lastAccessed": 1778211888955,
-      "type": "file"
-    },
-    {
-      "path": "pkg/event/change_event.go",
-      "accessCount": 2,
-      "lastAccessed": 1778225282699,
-      "type": "file"
-    },
-    {
-      "path": "pkg/event/row_data.go",
-      "accessCount": 2,
-      "lastAccessed": 1778227157016,
-      "type": "file"
-    },
-    {
-      "path": "pkg/pipeline/task.go",
-      "accessCount": 2,
-      "lastAccessed": 1778227157073,
-      "type": "file"
-    },
-    {
-      "path": "",
-      "accessCount": 2,
-      "lastAccessed": 1778227491214,
+      "path": "pkg/parser/postgres/generated",
+      "accessCount": 23,
+      "lastAccessed": 1778418226171,
       "type": "directory"
     },
     {
-      "path": "pkg/pipeline/pipeline.go",
-      "accessCount": 2,
-      "lastAccessed": 1778227804033,
+      "path": "pkg/parser/sqlserver/visitor.go",
+      "accessCount": 18,
+      "lastAccessed": 1778419405774,
       "type": "file"
     },
     {
-      "path": "pkg/event/position.go",
-      "accessCount": 1,
-      "lastAccessed": 1778148809164,
+      "path": "pkg/parser/sqlserver/generated",
+      "accessCount": 17,
+      "lastAccessed": 1778418148033,
+      "type": "directory"
+    },
+    {
+      "path": "pkg/parser/oracle/generated",
+      "accessCount": 17,
+      "lastAccessed": 1778418158702,
+      "type": "directory"
+    },
+    {
+      "path": "pkg/parser/mysql/generated",
+      "accessCount": 16,
+      "lastAccessed": 1778417859099,
+      "type": "directory"
+    },
+    {
+      "path": "pkg/parser/postgres/parser_test.go",
+      "accessCount": 15,
+      "lastAccessed": 1778419850638,
       "type": "file"
     },
     {
-      "path": "pkg/source/errors.go",
-      "accessCount": 1,
-      "lastAccessed": 1778148861551,
+      "path": "pkg/parser/postgres/visitor.go",
+      "accessCount": 14,
+      "lastAccessed": 1778419372800,
       "type": "file"
     },
     {
-      "path": "pkg/sink/errors.go",
-      "accessCount": 1,
-      "lastAccessed": 1778148861782,
+      "path": "pkg/parser/mysql/visitor.go",
+      "accessCount": 13,
+      "lastAccessed": 1778419345532,
       "type": "file"
     },
     {
-      "path": "pkg/source/connector_test.go",
-      "accessCount": 1,
-      "lastAccessed": 1778152838510,
+      "path": "pkg/parser/oracle/visitor.go",
+      "accessCount": 13,
+      "lastAccessed": 1778419405649,
       "type": "file"
     },
     {
-      "path": "pkg/sink/connector_test.go",
-      "accessCount": 1,
-      "lastAccessed": 1778152838631,
+      "path": "pkg/parser/mysql/mysql_parser_test.go",
+      "accessCount": 13,
+      "lastAccessed": 1778419823307,
       "type": "file"
     },
     {
-      "path": "pkg/pipeline/errors.go",
-      "accessCount": 1,
-      "lastAccessed": 1778152925945,
+      "path": "pkg/parser/sqlserver/parser_test.go",
+      "accessCount": 13,
+      "lastAccessed": 1778419850884,
       "type": "file"
     },
     {
-      "path": "pkg/pipeline/coordinator.go",
-      "accessCount": 1,
-      "lastAccessed": 1778153121799,
+      "path": "pkg/parser/oracle/parser_test.go",
+      "accessCount": 12,
+      "lastAccessed": 1778419850759,
       "type": "file"
     },
     {
-      "path": "pkg/pipeline/task_errors.go",
-      "accessCount": 1,
-      "lastAccessed": 1778153121920,
+      "path": "pkg/parser/postgres/postgres_parser.go",
+      "accessCount": 10,
+      "lastAccessed": 1778419372671,
       "type": "file"
     },
     {
-      "path": "pkg/pipeline/pipeline_test.go",
-      "accessCount": 1,
-      "lastAccessed": 1778153169303,
+      "path": "pkg/parser/oracle/oracle_parser.go",
+      "accessCount": 7,
+      "lastAccessed": 1778419405371,
       "type": "file"
     },
     {
-      "path": "pkg/coordinator/errors.go",
-      "accessCount": 1,
-      "lastAccessed": 1778153428842,
+      "path": "scripts/generate-parsers.sh",
+      "accessCount": 6,
+      "lastAccessed": 1778413093894,
       "type": "file"
     },
     {
-      "path": "pkg/api/errors.go",
-      "accessCount": 1,
-      "lastAccessed": 1778154194057,
+      "path": "pkg/parser/parser.go",
+      "accessCount": 6,
+      "lastAccessed": 1778419315994,
       "type": "file"
     },
     {
-      "path": "pkg/cli/commands.go",
-      "accessCount": 1,
-      "lastAccessed": 1778154236512,
+      "path": "pkg/parser/sqlserver/sqlserver_parser.go",
+      "accessCount": 6,
+      "lastAccessed": 1778419405502,
       "type": "file"
     },
     {
-      "path": "pkg/api/server_test.go",
-      "accessCount": 1,
-      "lastAccessed": 1778154418812,
+      "path": "pkg/parser/mysql/generated/mysql_parser.go",
+      "accessCount": 5,
+      "lastAccessed": 1778411773812,
+      "type": "file"
+    },
+    {
+      "path": "pkg/parser/parser_example_test.go",
+      "accessCount": 5,
+      "lastAccessed": 1778419793429,
+      "type": "file"
+    },
+    {
+      "path": "pkg/parser/postgres/generated/postgresql_lexer.go",
+      "accessCount": 4,
+      "lastAccessed": 1778411719584,
+      "type": "file"
+    },
+    {
+      "path": "pkg/parser/oracle/generated/plsqlparser_visitor.go",
+      "accessCount": 4,
+      "lastAccessed": 1778413748219,
+      "type": "file"
+    },
+    {
+      "path": "pkg/parser/parser_test.go",
+      "accessCount": 4,
+      "lastAccessed": 1778419452489,
+      "type": "file"
+    },
+    {
+      "path": "docs/design/implementation-plan.md",
+      "accessCount": 4,
+      "lastAccessed": 1778421454508,
       "type": "file"
     },
     {
       "path": "Makefile",
-      "accessCount": 1,
-      "lastAccessed": 1778209337532,
+      "accessCount": 3,
+      "lastAccessed": 1778412229009,
       "type": "file"
     },
     {
-      "path": "tests/integration/docker-compose.yml",
-      "accessCount": 1,
-      "lastAccessed": 1778209425422,
+      "path": "pkg/parser/postgres/generated/postgresqlparser_visitor.go",
+      "accessCount": 3,
+      "lastAccessed": 1778413422435,
       "type": "file"
     },
     {
-      "path": "tests/integration/fixtures.go",
-      "accessCount": 1,
-      "lastAccessed": 1778209425551,
+      "path": "pkg/parser/postgres/generated/postgresql_parser.go",
+      "accessCount": 3,
+      "lastAccessed": 1778413494246,
       "type": "file"
     },
     {
-      "path": "tests/integration/mysql_test.go",
-      "accessCount": 1,
-      "lastAccessed": 1778209425666,
-      "type": "file"
-    },
-    {
-      "path": "tests/integration/postgres_test.go",
-      "accessCount": 1,
-      "lastAccessed": 1778209481961,
-      "type": "file"
-    },
-    {
-      "path": "tests/integration/etcd_test.go",
-      "accessCount": 1,
-      "lastAccessed": 1778209482088,
-      "type": "file"
-    },
-    {
-      "path": "tests/integration/run.sh",
-      "accessCount": 1,
-      "lastAccessed": 1778209482235,
-      "type": "file"
-    },
-    {
-      "path": "tests/integration/pipeline_test.go",
-      "accessCount": 1,
-      "lastAccessed": 1778211635406,
-      "type": "file"
-    },
-    {
-      "path": "pkg",
-      "accessCount": 1,
-      "lastAccessed": 1778212818296,
+      "path": "pkg/parser/oracle",
+      "accessCount": 3,
+      "lastAccessed": 1778417249115,
       "type": "directory"
     },
     {
-      "path": "docs/api/openapi.yaml",
-      "accessCount": 1,
-      "lastAccessed": 1778213035946,
+      "path": "pkg/parser/mysql/mysql_parser.go",
+      "accessCount": 3,
+      "lastAccessed": 1778419334033,
       "type": "file"
     },
     {
-      "path": "docs/api/README.md",
+      "path": "pkg/parser/noop/noop_parser.go",
+      "accessCount": 3,
+      "lastAccessed": 1778419417769,
+      "type": "file"
+    },
+    {
+      "path": "docs/design/pipeline-design.md",
+      "accessCount": 3,
+      "lastAccessed": 1778421177052,
+      "type": "file"
+    },
+    {
+      "path": "pkg/event/change_event.go",
+      "accessCount": 3,
+      "lastAccessed": 1778421192540,
+      "type": "file"
+    },
+    {
+      "path": "pkg/parser/postgres/generated/postgresql_lexer_base.go",
+      "accessCount": 2,
+      "lastAccessed": 1778411338022,
+      "type": "file"
+    },
+    {
+      "path": "pkg/parser/postgres/generated/postgresql_parser_base.go",
+      "accessCount": 2,
+      "lastAccessed": 1778411344214,
+      "type": "file"
+    },
+    {
+      "path": "pkg/parser/postgres/generated/string_stack.go",
+      "accessCount": 2,
+      "lastAccessed": 1778411344509,
+      "type": "file"
+    },
+    {
+      "path": "pkg/parser/oracle/generated/plsql_lexer_base.go",
+      "accessCount": 2,
+      "lastAccessed": 1778411355881,
+      "type": "file"
+    },
+    {
+      "path": "pkg/parser/oracle/generated/plsql_parser_base.go",
+      "accessCount": 2,
+      "lastAccessed": 1778411356451,
+      "type": "file"
+    },
+    {
+      "path": "pkg/parser/sqlserver/generated/tsqlparser_visitor.go",
+      "accessCount": 2,
+      "lastAccessed": 1778413913393,
+      "type": "directory"
+    },
+    {
+      "path": "pkg/parser",
+      "accessCount": 2,
+      "lastAccessed": 1778418901659,
+      "type": "directory"
+    },
+    {
+      "path": "pkg/parser/noop/noop_parser_test.go",
+      "accessCount": 2,
+      "lastAccessed": 1778419474307,
+      "type": "file"
+    },
+    {
+      "path": "pkg/parser/registry.go",
       "accessCount": 1,
-      "lastAccessed": 1778213072255,
+      "lastAccessed": 1778410553602,
+      "type": "file"
+    },
+    {
+      "path": "pkg/parser/postgres",
+      "accessCount": 1,
+      "lastAccessed": 1778417194342,
+      "type": "directory"
+    },
+    {
+      "path": "pkg/parser/registry_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1778419438660,
+      "type": "file"
+    },
+    {
+      "path": "docs/design/event-model-design.md",
+      "accessCount": 1,
+      "lastAccessed": 1778420206555,
+      "type": "file"
+    },
+    {
+      "path": "pkg/pipeline/pipeline.go",
+      "accessCount": 1,
+      "lastAccessed": 1778420222838,
+      "type": "file"
+    },
+    {
+      "path": "pkg/filter/filter.go",
+      "accessCount": 1,
+      "lastAccessed": 1778420242055,
+      "type": "file"
+    },
+    {
+      "path": "pkg/filter/rule.go",
+      "accessCount": 1,
+      "lastAccessed": 1778420271141,
+      "type": "file"
+    },
+    {
+      "path": "pkg/filter/filter_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1778420335546,
+      "type": "file"
+    },
+    {
+      "path": "pkg/transform/transform.go",
+      "accessCount": 1,
+      "lastAccessed": 1778420435213,
       "type": "file"
     }
   ],

@@ -10,7 +10,7 @@ import (
 
 	"github.com/UFOXD/datastream/pkg/config"
 	"github.com/UFOXD/datastream/pkg/event"
-	"github.com/UFOXD/datastream/pkg/pipeline"
+	"github.com/UFOXD/datastream/internal/pipeline"
 )
 
 func TestPipelineMemoryIntegration(t *testing.T) {

@@ -6,6 +6,62 @@
 
 ---
 
+## 目录结构规范
+
+Go项目必须遵循标准目录结构，区分可复用库与业务代码：
+
+```
+pkg/                          ← 可被外部项目导入（可复用库）
+├── parser/                   ← 通用DDL解析库（设计良好可独立使用）
+│   ├── mysql/
+│   ├── postgres/
+│   ├── oracle/
+│   ├── sqlserver/
+│   └── noop/
+├── event/                    ← 事件模型（parser依赖，必须可导出）
+├── config/                   ← 配置结构（可复用）
+├── errors/                   ← 通用错误码（可复用）
+├── logutil/                  ← 日志工具（可复用）
+├── utils/                    ← 通用工具（可复用）
+├── metrics/                  ← 监控指标（可复用）
+└── version/                  ← 版本信息（可复用）
+
+internal/                     ← 仅限本项目使用（业务代码）
+├── source/                   ← Source连接器实现
+├── sink/                     ← Sink连接器实现
+├── pipeline/                 ← 管道核心逻辑
+├── filter/                   ← 过滤模块
+├── transform/                ← 转换模块
+├── router/                   ← 路由模块
+├── coordinator/              ← 协调器
+├── offset/                   ← 位点存储
+├── api/                      ← REST API
+├── cli/                      ← CLI
+└── app/                      ← 应用生命周期
+
+cmd/                          ← 主程序入口
+├── datastream/               ← 主服务
+└── datastream-ctl/           ← 控制工具
+```
+
+### 判断标准
+
+| 目录位置 | 判断标准 | 示例 |
+|---------|---------|------|
+| `pkg/` | 外部项目可能需要导入 | parser, utils, errors |
+| `internal/` | 仅本项目使用 | source, sink, pipeline |
+| `cmd/` | 可执行程序入口 | main.go |
+
+### 重构原则
+
+当发现代码位置不正确时：
+1. **立即停止**当前开发
+2. **移动代码**到正确位置
+3. **更新import路径**
+4. **验证编译和测试**
+
+---
+
 ## 开发流程规范
 
 ### 1. 实施前检查

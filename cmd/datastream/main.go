@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/UFOXD/datastream/pkg/app"
+	"github.com/UFOXD/datastream/internal/app"
 	"github.com/UFOXD/datastream/pkg/config"
 	"github.com/UFOXD/datastream/pkg/logutil"
 	"github.com/UFOXD/datastream/pkg/version"
