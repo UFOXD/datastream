@@ -45,10 +45,14 @@ func TestParseCreateDatabase(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := p.Parse(ctx, tt.ddl)
+			results, err := p.Parse(ctx, tt.ddl)
 			if err != nil {
 				t.Fatalf("Parse failed: %v", err)
 			}
+			if len(results) == 0 {
+				t.Fatal("Expected at least one result")
+			}
+			result := results[0]
 			if result.Type != parser.DDLTypeCreateDatabase {
 				t.Errorf("Expected DDLTypeCreateDatabase, got %s", result.Type)
 			}
@@ -63,10 +67,14 @@ func TestParseDropDatabase(t *testing.T) {
 	p := NewParser()
 	ctx := context.Background()
 
-	result, err := p.Parse(ctx, "DROP DATABASE testdb")
+	results, err := p.Parse(ctx, "DROP DATABASE testdb")
 	if err != nil {
 		t.Fatalf("Parse failed: %v", err)
 	}
+	if len(results) == 0 {
+		t.Fatal("Expected at least one result")
+	}
+	result := results[0]
 	if result.Type != parser.DDLTypeDropDatabase {
 		t.Errorf("Expected DDLTypeDropDatabase, got %s", result.Type)
 	}
@@ -107,10 +115,14 @@ func TestParseCreateTable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := p.Parse(ctx, tt.ddl)
+			results, err := p.Parse(ctx, tt.ddl)
 			if err != nil {
 				t.Fatalf("Parse failed: %v", err)
 			}
+			if len(results) == 0 {
+				t.Fatal("Expected at least one result")
+			}
+			result := results[0]
 			if result.Type != parser.DDLTypeCreateTable {
 				t.Errorf("Expected DDLTypeCreateTable, got %s", result.Type)
 			}
@@ -131,10 +143,14 @@ func TestParseDropTable(t *testing.T) {
 	p := NewParser()
 	ctx := context.Background()
 
-	result, err := p.Parse(ctx, "DROP TABLE testdb.users")
+	results, err := p.Parse(ctx, "DROP TABLE testdb.users")
 	if err != nil {
 		t.Fatalf("Parse failed: %v", err)
 	}
+	if len(results) == 0 {
+		t.Fatal("Expected at least one result")
+	}
+	result := results[0]
 	if result.Type != parser.DDLTypeDropTable {
 		t.Errorf("Expected DDLTypeDropTable, got %s", result.Type)
 	}
@@ -176,10 +192,14 @@ func TestParseAlterTable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := p.Parse(ctx, tt.ddl)
+			results, err := p.Parse(ctx, tt.ddl)
 			if err != nil {
 				t.Fatalf("Parse failed: %v", err)
 			}
+			if len(results) == 0 {
+				t.Fatal("Expected at least one result")
+			}
+			result := results[0]
 			if result.Type != parser.DDLTypeAlterTable {
 				t.Errorf("Expected DDLTypeAlterTable, got %s", result.Type)
 			}
@@ -203,10 +223,14 @@ func TestParseCreateIndex(t *testing.T) {
 	p := NewParser()
 	ctx := context.Background()
 
-	result, err := p.Parse(ctx, "CREATE INDEX idx_name ON users (name)")
+	results, err := p.Parse(ctx, "CREATE INDEX idx_name ON users (name)")
 	if err != nil {
 		t.Fatalf("Parse failed: %v", err)
 	}
+	if len(results) == 0 {
+		t.Fatal("Expected at least one result")
+	}
+	result := results[0]
 	if result.Type != parser.DDLTypeCreateIndex {
 		t.Errorf("Expected DDLTypeCreateIndex, got %s", result.Type)
 	}
@@ -225,10 +249,14 @@ func TestParseDropIndex(t *testing.T) {
 	p := NewParser()
 	ctx := context.Background()
 
-	result, err := p.Parse(ctx, "DROP INDEX idx_name ON users")
+	results, err := p.Parse(ctx, "DROP INDEX idx_name ON users")
 	if err != nil {
 		t.Fatalf("Parse failed: %v", err)
 	}
+	if len(results) == 0 {
+		t.Fatal("Expected at least one result")
+	}
+	result := results[0]
 	if result.Type != parser.DDLTypeDropIndex {
 		t.Errorf("Expected DDLTypeDropIndex, got %s", result.Type)
 	}
@@ -244,10 +272,14 @@ func TestParseCreateView(t *testing.T) {
 	p := NewParser()
 	ctx := context.Background()
 
-	result, err := p.Parse(ctx, "CREATE VIEW user_view AS SELECT * FROM users")
+	results, err := p.Parse(ctx, "CREATE VIEW user_view AS SELECT * FROM users")
 	if err != nil {
 		t.Fatalf("Parse failed: %v", err)
 	}
+	if len(results) == 0 {
+		t.Fatal("Expected at least one result")
+	}
+	result := results[0]
 	if result.Type != parser.DDLTypeCreateView {
 		t.Errorf("Expected DDLTypeCreateView, got %s", result.Type)
 	}
@@ -260,10 +292,14 @@ func TestParseDropView(t *testing.T) {
 	p := NewParser()
 	ctx := context.Background()
 
-	result, err := p.Parse(ctx, "DROP VIEW user_view")
+	results, err := p.Parse(ctx, "DROP VIEW user_view")
 	if err != nil {
 		t.Fatalf("Parse failed: %v", err)
 	}
+	if len(results) == 0 {
+		t.Fatal("Expected at least one result")
+	}
+	result := results[0]
 	if result.Type != parser.DDLTypeDropView {
 		t.Errorf("Expected DDLTypeDropView, got %s", result.Type)
 	}
@@ -276,10 +312,14 @@ func TestParseTruncate(t *testing.T) {
 	p := NewParser()
 	ctx := context.Background()
 
-	result, err := p.Parse(ctx, "TRUNCATE TABLE users")
+	results, err := p.Parse(ctx, "TRUNCATE TABLE users")
 	if err != nil {
 		t.Fatalf("Parse failed: %v", err)
 	}
+	if len(results) == 0 {
+		t.Fatal("Expected at least one result")
+	}
+	result := results[0]
 	if result.Type != parser.DDLTypeTruncate {
 		t.Errorf("Expected DDLTypeTruncate, got %s", result.Type)
 	}
@@ -292,10 +332,14 @@ func TestParseUnknown(t *testing.T) {
 	p := NewParser()
 	ctx := context.Background()
 
-	result, err := p.Parse(ctx, "SELECT * FROM users")
+	results, err := p.Parse(ctx, "SELECT * FROM users")
 	if err != nil {
 		t.Fatalf("Parse failed: %v", err)
 	}
+	if len(results) == 0 {
+		t.Fatal("Expected at least one result")
+	}
+	result := results[0]
 	if result.Type != parser.DDLTypeUnknown {
 		t.Errorf("Expected DDLTypeUnknown, got %s", result.Type)
 	}
@@ -313,4 +357,35 @@ func TestSupportedTypes(t *testing.T) {
 
 func TestParserImplementsInterface(t *testing.T) {
 	var _ parser.DDLParser = NewParser()
+}
+
+func TestParseMultipleStatements(t *testing.T) {
+	p := NewParser()
+	ctx := context.Background()
+
+	// Test parsing multiple DDL statements separated by semicolons
+	ddl := "CREATE TABLE users (id INT PRIMARY KEY); DROP TABLE users;"
+	results, err := p.Parse(ctx, ddl)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("Expected 2 results, got %d", len(results))
+	}
+
+	// Check first statement
+	if results[0].Type != parser.DDLTypeCreateTable {
+		t.Errorf("Expected DDLTypeCreateTable for first result, got %s", results[0].Type)
+	}
+	if results[0].Table != "users" {
+		t.Errorf("Expected table 'users' for first result, got %s", results[0].Table)
+	}
+
+	// Check second statement
+	if results[1].Type != parser.DDLTypeDropTable {
+		t.Errorf("Expected DDLTypeDropTable for second result, got %s", results[1].Type)
+	}
+	if results[1].Table != "users" {
+		t.Errorf("Expected table 'users' for second result, got %s", results[1].Table)
+	}
 }

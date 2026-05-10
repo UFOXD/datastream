@@ -7,11 +7,24 @@ import "context"
 // Only MySQL/MariaDB require full DDL parsing; other databases
 // provide structured output through their CDC mechanisms.
 type DDLParser interface {
-	// Parse parses a DDL statement and returns structured result.
-	Parse(ctx context.Context, ddl string) (*DDLResult, error)
+	// Parse parses one or more DDL statements (separated by semicolons) and returns structured results.
+	// Returns a slice of DDLResult, one for each successfully parsed statement.
+	Parse(ctx context.Context, ddl string) ([]*DDLResult, error)
 
 	// SupportedTypes returns the DDL types this parser can handle.
 	SupportedTypes() []DDLType
+}
+
+// DDLResults holds multiple DDL parsing results for use in visitor pattern.
+type DDLResults struct {
+	Results []*DDLResult
+}
+
+// Add appends a result to the collection.
+func (r *DDLResults) Add(result *DDLResult) {
+	if result != nil {
+		r.Results = append(r.Results, result)
+	}
 }
 
 // DDLType represents the type of DDL statement.

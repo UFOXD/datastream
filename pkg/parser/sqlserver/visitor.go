@@ -23,27 +23,30 @@ func NewDDLVisitor() *DDLVisitor {
 // VisitTsql_file visits the root node.
 func (v *DDLVisitor) VisitTsql_file(ctx *generated.Tsql_fileContext) interface{} {
 	v.ddl = ctx.GetText()
+	results := &parser.DDLResults{}
+
 	for _, batch := range ctx.AllBatch() {
-		result := v.VisitBatch(batch.(*generated.BatchContext))
-		if result != nil {
-			return result
+		batchResults := v.VisitBatch(batch.(*generated.BatchContext))
+		if br, ok := batchResults.(*parser.DDLResults); ok {
+			results.Results = append(results.Results, br.Results...)
 		}
 	}
-	return &parser.DDLResult{
-		Type:      parser.DDLTypeUnknown,
-		Statement: v.ddl,
-	}
+
+	return results
 }
 
 // VisitBatch visits a batch node.
 func (v *DDLVisitor) VisitBatch(ctx *generated.BatchContext) interface{} {
+	results := &parser.DDLResults{}
+
 	for _, stmt := range ctx.AllSql_clauses() {
 		result := v.VisitSql_clauses(stmt.(*generated.Sql_clausesContext))
-		if result != nil {
-			return result
+		if ddlResult, ok := result.(*parser.DDLResult); ok && ddlResult != nil {
+			results.Add(ddlResult)
 		}
 	}
-	return nil
+
+	return results
 }
 
 // VisitSql_clauses visits SQL clauses node.
@@ -135,7 +138,7 @@ func (v *DDLVisitor) VisitAlter_table(ctx *generated.Alter_tableContext) interfa
 		},
 	}
 
-	// Extract table name
+	// Extract table name using ANTLR context method
 	if tableName := ctx.Table_name(0); tableName != nil {
 		schema, table := extractTableRef(tableName)
 		result.Database = schema
@@ -146,41 +149,38 @@ func (v *DDLVisitor) VisitAlter_table(ctx *generated.Alter_tableContext) interfa
 		}
 	}
 
-	// Process ALTER actions from text
-	text := ctx.GetText()
-	upperText := strings.ToUpper(text)
-
-	// ADD COLUMN
-	if strings.Contains(upperText, "ADD") {
-		colName := extractColName(text, "ADD")
-		if colName != "" {
-			col := &parser.ColumnInfo{
-				Name:     colName,
-				Nullable: true,
+	// Use ANTLR context methods to detect ALTER actions
+	// ADD COLUMN - check if ADD keyword exists
+	if ctx.ADD() != nil {
+		// Get column name from Id_ or Column_def_table_constraints
+		if colDefs := ctx.Column_def_table_constraints(); colDefs != nil {
+			// Extract column name from column definition
+			colName := extractColumnFromDef(colDefs.GetText())
+			if colName != "" {
+				col := &parser.ColumnInfo{
+					Name:     colName,
+					Nullable: true,
+				}
+				result.TableChanges.AddedColumns = append(result.TableChanges.AddedColumns, *col)
 			}
-			result.TableChanges.AddedColumns = append(result.TableChanges.AddedColumns, *col)
+		} else if ctx.Column_definition() != nil {
+			colName := extractColumnFromDef(ctx.Column_definition().GetText())
+			if colName != "" {
+				col := &parser.ColumnInfo{
+					Name:     colName,
+					Nullable: true,
+				}
+				result.TableChanges.AddedColumns = append(result.TableChanges.AddedColumns, *col)
+			}
 		}
 	}
 
-	// DROP COLUMN
-	if strings.Contains(upperText, "DROPCOLUMN") || strings.Contains(upperText, "DROP COLUMN") {
-		colName := extractColName(text, "COLUMN")
-		if colName != "" {
+	// DROP COLUMN - check if DROP keyword exists with COLUMN keyword
+	if ctx.DROP() != nil && ctx.COLUMN() != nil {
+		// Get column name from Id_ (column name to drop)
+		if colId := ctx.Id_(0); colId != nil {
+			colName := strings.Trim(colId.GetText(), "[]\"")
 			result.TableChanges.DroppedColumns = append(result.TableChanges.DroppedColumns, colName)
-		}
-	}
-
-	// ALTER COLUMN
-	if strings.Contains(upperText, "ALTERCOLUMN") || strings.Contains(upperText, "ALTER COLUMN") {
-		colName := extractColName(text, "COLUMN")
-		if colName != "" {
-			newCol := &parser.ColumnInfo{
-				Name: colName,
-			}
-			result.TableChanges.ModifiedColumns = append(result.TableChanges.ModifiedColumns, parser.ColumnModification{
-				Old: parser.ColumnInfo{Name: newCol.Name},
-				New: *newCol,
-			})
 		}
 	}
 
@@ -211,30 +211,75 @@ func (v *DDLVisitor) VisitDrop_index(ctx *generated.Drop_indexContext) interface
 		Statement: v.ddl,
 	}
 
-	// Extract index name from text
-	text := ctx.GetText()
-	upperText := strings.ToUpper(text)
-	idx := strings.Index(upperText, "INDEX")
-	if idx != -1 {
-		rest := text[idx+5:]
-		rest = strings.TrimSpace(rest)
+	// Use ANTLR context methods to get index name
+	// Try modern syntax first: DROP INDEX IF EXISTS index_name ON table_name
+	if dropIndex := ctx.Drop_relational_or_xml_or_spatial_index(0); dropIndex != nil {
+		dropIndexCtx := dropIndex.(*generated.Drop_relational_or_xml_or_spatial_indexContext)
 
-		// Handle IF EXISTS
-		if strings.HasPrefix(strings.ToUpper(rest), "IF EXISTS") {
-			rest = strings.TrimSpace(rest[9:])
+		// Get index name
+		if indexName := dropIndexCtx.GetIndex_name(); indexName != nil {
+			text := indexName.GetText()
+			text = strings.Trim(text, "[]\"")
+			result.IndexChanges = &parser.IndexChanges{
+				IndexName: text,
+				Operation: "drop",
+			}
 		}
 
-		parts := strings.Fields(rest)
-		if len(parts) > 0 {
-			name := strings.Trim(parts[0], "[]\"")
-			// Handle schema.index format
-			if strings.Contains(name, ".") {
-				p := strings.SplitN(name, ".", 2)
-				name = p[1]
+		// Get table name from Full_table_name
+		if fullTableName := dropIndexCtx.Full_table_name(); fullTableName != nil {
+			tableText := fullTableName.GetText()
+			tableText = strings.ReplaceAll(tableText, "[", "")
+			tableText = strings.ReplaceAll(tableText, "]", "")
+			if strings.Contains(tableText, ".") {
+				parts := strings.Split(tableText, ".")
+				if len(parts) >= 2 {
+					result.Database = parts[0]
+					result.Table = parts[len(parts)-1]
+				} else {
+					result.Table = tableText
+				}
+			} else {
+				result.Table = tableText
 			}
+			if result.IndexChanges != nil {
+				result.IndexChanges.DatabaseName = result.Database
+				result.IndexChanges.TableName = result.Table
+			}
+		}
+	} else if dropIndex := ctx.Drop_backward_compatible_index(0); dropIndex != nil {
+		// Handle backward compatible syntax: DROP INDEX index_name ON table_name
+		dropIndexCtx := dropIndex.(*generated.Drop_backward_compatible_indexContext)
+
+		// Get index name from GetIndex_name
+		if indexName := dropIndexCtx.GetIndex_name(); indexName != nil {
+			text := indexName.GetText()
+			text = strings.Trim(text, "[]\"")
 			result.IndexChanges = &parser.IndexChanges{
-				IndexName: name,
+				IndexName: text,
 				Operation: "drop",
+			}
+		}
+
+		// Get table name from GetTable_or_view_name
+		if tableOrViewName := dropIndexCtx.GetTable_or_view_name(); tableOrViewName != nil {
+			tableText := tableOrViewName.GetText()
+			tableText = strings.ReplaceAll(tableText, "[", "")
+			tableText = strings.ReplaceAll(tableText, "]", "")
+			if strings.Contains(tableText, ".") {
+				parts := strings.Split(tableText, ".")
+				if len(parts) >= 2 {
+					result.Database = parts[0]
+					result.Table = parts[len(parts)-1]
+				} else {
+					result.Table = tableText
+				}
+			} else {
+				result.Table = tableText
+			}
+			if result.IndexChanges != nil {
+				result.IndexChanges.DatabaseName = result.Database
+				result.IndexChanges.TableName = result.Table
 			}
 		}
 	}
@@ -296,55 +341,24 @@ func (v *DDLVisitor) VisitCreate_index(ctx *generated.Create_indexContext) inter
 		Statement: v.ddl,
 	}
 
-	// Extract index name from text
-	text := ctx.GetText()
-	upperText := strings.ToUpper(text)
-	idx := strings.Index(upperText, "INDEX")
-	if idx != -1 {
-		rest := text[idx+5:]
-		rest = strings.TrimSpace(rest)
-
-		// Skip UNIQUE keyword if present
-		if strings.HasPrefix(strings.ToUpper(rest), "UNIQUE") {
-			rest = strings.TrimSpace(rest[6:])
-		}
-
-		// Skip CLUSTERED/NONCLUSTERED keywords if present
-		if strings.HasPrefix(strings.ToUpper(rest), "CLUSTERED") {
-			rest = strings.TrimSpace(rest[9:])
-		}
-		if strings.HasPrefix(strings.ToUpper(rest), "NONCLUSTERED") {
-			rest = strings.TrimSpace(rest[12:])
-		}
-
-		parts := strings.Fields(rest)
-		if len(parts) > 0 {
-			name := strings.Trim(parts[0], "[]\"")
-			result.IndexChanges = &parser.IndexChanges{
-				IndexName: name,
-				Operation: "create",
-			}
+	// Use ANTLR context method to get index name (first Id_ is the index name)
+	if indexName := ctx.Id_(0); indexName != nil {
+		text := indexName.GetText()
+		text = strings.Trim(text, "[]\"")
+		result.IndexChanges = &parser.IndexChanges{
+			IndexName: text,
+			Operation: "create",
 		}
 	}
 
-	// Extract table name from ON clause
-	if onClause := strings.Index(upperText, " ON "); onClause != -1 {
-		rest := text[onClause+4:]
-		rest = strings.TrimSpace(rest)
-		parts := strings.Fields(rest)
-		if len(parts) > 0 {
-			tableRef := strings.Trim(parts[0], "[]\"")
-			if strings.Contains(tableRef, ".") {
-				p := strings.SplitN(tableRef, ".", 2)
-				result.Database = p[0]
-				result.Table = p[1]
-			} else {
-				result.Table = tableRef
-			}
-			if result.IndexChanges != nil {
-				result.IndexChanges.DatabaseName = result.Database
-				result.IndexChanges.TableName = result.Table
-			}
+	// Use ANTLR context method to get table name
+	if tableName := ctx.Table_name(); tableName != nil {
+		schema, table := extractTableRef(tableName)
+		result.Database = schema
+		result.Table = table
+		if result.IndexChanges != nil {
+			result.IndexChanges.DatabaseName = schema
+			result.IndexChanges.TableName = table
 		}
 	}
 
@@ -358,23 +372,10 @@ func (v *DDLVisitor) visitDropDatabase(ctx *generated.Drop_databaseContext) inte
 		Statement: v.ddl,
 	}
 
-	// Extract database name from text
-	text := ctx.GetText()
-	upperText := strings.ToUpper(text)
-	idx := strings.Index(upperText, "DATABASE")
-	if idx != -1 {
-		rest := text[idx+8:]
-		rest = strings.TrimSpace(rest)
-
-		// Handle IF EXISTS
-		if strings.HasPrefix(strings.ToUpper(rest), "IF EXISTS") {
-			rest = strings.TrimSpace(rest[9:])
-		}
-
-		parts := strings.Fields(rest)
-		if len(parts) > 0 {
-			result.Database = strings.Trim(parts[0], "[]\"")
-		}
+	// Use ANTLR context method to get database name (first Id_ is the database name)
+	if dbName := ctx.Id_(0); dbName != nil {
+		text := dbName.GetText()
+		result.Database = strings.Trim(text, "[]\"")
 	}
 
 	return result
@@ -425,6 +426,20 @@ func extractColName(text, keyword string) string {
 	parts := strings.Fields(rest)
 	if len(parts) > 0 {
 		return strings.Trim(parts[0], "[]\"")
+	}
+	return ""
+}
+
+// extractColumnFromDef extracts column name from column definition text
+func extractColumnFromDef(text string) string {
+	text = strings.TrimSpace(text)
+	text = strings.ReplaceAll(text, "[", "")
+	text = strings.ReplaceAll(text, "]", "")
+
+	// Column name is typically the first word in the definition
+	parts := strings.Fields(text)
+	if len(parts) > 0 {
+		return parts[0]
 	}
 	return ""
 }

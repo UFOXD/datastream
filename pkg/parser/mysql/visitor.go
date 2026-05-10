@@ -23,27 +23,30 @@ func NewDDLVisitor() *DDLVisitor {
 // VisitRoot visits the root node.
 func (v *DDLVisitor) VisitRoot(ctx *generated.RootContext) interface{} {
 	v.ddl = ctx.GetText()
+	results := &parser.DDLResults{}
+
 	if sqlStmts := ctx.SqlStatements(); sqlStmts != nil {
-		return v.VisitSqlStatements(sqlStmts.(*generated.SqlStatementsContext))
+		stmtResults := v.VisitSqlStatements(sqlStmts.(*generated.SqlStatementsContext))
+		if sr, ok := stmtResults.(*parser.DDLResults); ok {
+			results.Results = append(results.Results, sr.Results...)
+		}
 	}
-	return &parser.DDLResult{
-		Type:      parser.DDLTypeUnknown,
-		Statement: v.ddl,
-	}
+
+	return results
 }
 
 // VisitSqlStatements visits SQL statements.
 func (v *DDLVisitor) VisitSqlStatements(ctx *generated.SqlStatementsContext) interface{} {
+	results := &parser.DDLResults{}
+
 	for _, stmt := range ctx.AllSqlStatement() {
 		result := v.VisitSqlStatement(stmt.(*generated.SqlStatementContext))
-		if result != nil {
-			return result
+		if ddlResult, ok := result.(*parser.DDLResult); ok && ddlResult != nil {
+			results.Add(ddlResult)
 		}
 	}
-	return &parser.DDLResult{
-		Type:      parser.DDLTypeUnknown,
-		Statement: v.ddl,
-	}
+
+	return results
 }
 
 // VisitSqlStatement visits a SQL statement node.
@@ -153,15 +156,25 @@ func (v *DDLVisitor) VisitAlterDatabase(ctx *generated.AlterDatabaseContext) int
 		Statement: v.ddl,
 	}
 
-	// Try to get database name
+	// AlterDatabaseContext is a base class, check for specific subtype
+	// The database name is typically the first identifier after DATABASE/SCHEMA keyword
 	text := ctx.GetText()
-	parts := strings.Fields(text)
-	for i, part := range parts {
-		if strings.ToUpper(part) == "DATABASE" || strings.ToUpper(part) == "SCHEMA" {
-			if i+1 < len(parts) {
-				result.Database = strings.Trim(parts[i+1], "`")
-				break
-			}
+	upperText := strings.ToUpper(text)
+
+	// Find DATABASE or SCHEMA keyword and get next identifier
+	if idx := strings.Index(upperText, "DATABASE"); idx != -1 {
+		rest := text[idx+8:]
+		rest = strings.TrimSpace(rest)
+		parts := strings.Fields(rest)
+		if len(parts) > 0 {
+			result.Database = strings.Trim(parts[0], "`")
+		}
+	} else if idx := strings.Index(upperText, "SCHEMA"); idx != -1 {
+		rest := text[idx+6:]
+		rest = strings.TrimSpace(rest)
+		parts := strings.Fields(rest)
+		if len(parts) > 0 {
+			result.Database = strings.Trim(parts[0], "`")
 		}
 	}
 
@@ -276,32 +289,12 @@ func (v *DDLVisitor) VisitDropTable(ctx *generated.DropTableContext) interface{}
 		Statement: v.ddl,
 	}
 
-	// Get first table name from the list
-	text := ctx.GetText()
-	upperText := strings.ToUpper(text)
-
-	// Find TABLE keyword and get next identifier
-	idx := strings.Index(upperText, "TABLE")
-	if idx != -1 {
-		rest := text[idx+5:]
-		rest = strings.TrimSpace(rest)
-
-		// Handle IF EXISTS
-		if strings.HasPrefix(strings.ToUpper(rest), "IF EXISTS") {
-			rest = strings.TrimSpace(rest[9:])
-		}
-
-		// Get first table name
-		parts := strings.Fields(rest)
-		if len(parts) > 0 {
-			tableRef := strings.Trim(parts[0], "`")
-			if strings.Contains(tableRef, ".") {
-				dbTable := strings.SplitN(tableRef, ".", 2)
-				result.Database = dbTable[0]
-				result.Table = dbTable[1]
-			} else {
-				result.Table = tableRef
-			}
+	// Use ANTLR context method to get table names
+	if tables := ctx.Tables(); tables != nil {
+		if tableName := tables.TableName(0); tableName != nil {
+			db, table := v.extractTableName(tableName.(*generated.TableNameContext))
+			result.Database = db
+			result.Table = table
 		}
 	}
 
@@ -506,32 +499,16 @@ func (v *DDLVisitor) VisitDropView(ctx *generated.DropViewContext) interface{} {
 		Statement: v.ddl,
 	}
 
-	// Extract view name from text
-	text := ctx.GetText()
-	upperText := strings.ToUpper(text)
-
-	// Find VIEW keyword
-	idx := strings.Index(upperText, "VIEW")
-	if idx != -1 {
-		rest := text[idx+4:]
-		rest = strings.TrimSpace(rest)
-
-		// Handle IF EXISTS
-		if strings.HasPrefix(strings.ToUpper(rest), "IF EXISTS") {
-			rest = strings.TrimSpace(rest[9:])
-		}
-
-		// Get first view name
-		parts := strings.Fields(rest)
-		if len(parts) > 0 {
-			viewRef := strings.Trim(parts[0], "`")
-			if strings.Contains(viewRef, ".") {
-				dbView := strings.SplitN(viewRef, ".", 2)
-				result.Database = dbView[0]
-				result.Table = dbView[1]
-			} else {
-				result.Table = viewRef
-			}
+	// Use ANTLR context method to get view names via FullId
+	if fullId := ctx.FullId(0); fullId != nil {
+		text := fullId.GetText()
+		text = strings.ReplaceAll(text, "`", "")
+		if strings.Contains(text, ".") {
+			parts := strings.SplitN(text, ".", 2)
+			result.Database = parts[0]
+			result.Table = parts[1]
+		} else {
+			result.Table = text
 		}
 	}
 

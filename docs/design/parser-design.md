@@ -37,11 +37,24 @@ import "context"
 
 // DDLParser DDL 解析器接口
 type DDLParser interface {
-    // Parse 解析 DDL 语句
-    Parse(ctx context.Context, ddl string) (*DDLResult, error)
+    // Parse 解析 DDL 语句，支持解析多条 DDL（以分号分隔）
+    // 返回所有解析结果的切片
+    Parse(ctx context.Context, ddl string) ([]*DDLResult, error)
 
     // SupportedTypes 返回支持的 DDL 类型
     SupportedTypes() []DDLType
+}
+
+// DDLResults 用于在 Visitor 中收集多个 DDL 解析结果
+type DDLResults struct {
+    Results []*DDLResult
+}
+
+// Add 添加一个结果到集合
+func (r *DDLResults) Add(result *DDLResult) {
+    if result != nil {
+        r.Results = append(r.Results, result)
+    }
 }
 
 // DDLResult DDL 解析结果
@@ -238,8 +251,8 @@ func NewMySQLDDLParser() *MySQLDDLParser {
     }
 }
 
-// Parse 解析 DDL 语句
-func (p *MySQLDDLParser) Parse(ctx context.Context, ddl string) (*parser.DDLResult, error) {
+// Parse 解析 DDL 语句，支持解析多条 DDL（以分号分隔）
+func (p *MySQLDDLParser) Parse(ctx context.Context, ddl string) ([]*parser.DDLResult, error) {
     // 1. 创建 Lexer
     input := antlr.NewInputStream(ddl)
     lexer := generated.NewMySQLLexer(input)
@@ -252,7 +265,16 @@ func (p *MySQLDDLParser) Parse(ctx context.Context, ddl string) (*parser.DDLResu
     tree := antlrParser.Root()
 
     // 4. 遍历语法树，提取结构化信息
-    return p.visitor.Visit(tree).(*parser.DDLResult), nil
+    result := tree.Accept(p.visitor)
+    if results, ok := result.(*parser.DDLResults); ok {
+        return results.Results, nil
+    }
+
+    // Fallback for unexpected result type
+    return []*parser.DDLResult{{
+        Type:      parser.DDLTypeUnknown,
+        Statement: ddl,
+    }}, nil
 }
 
 // SupportedTypes 返回支持的 DDL 类型
@@ -295,15 +317,33 @@ func NewDDLVisitor() *DDLVisitor {
     }
 }
 
-// VisitRoot 访问根节点
+// VisitRoot 访问根节点，收集所有 DDL 语句的结果
 func (v *DDLVisitor) VisitRoot(ctx *generated.RootContext) interface{} {
-    for _, stmt := range ctx.AllStatement() {
-        result := v.VisitStatement(stmt.(*generated.StatementContext))
-        if result != nil {
-            return result
+    v.ddl = ctx.GetText()
+    results := &parser.DDLResults{}
+
+    if sqlStmts := ctx.SqlStatements(); sqlStmts != nil {
+        stmtResults := v.VisitSqlStatements(sqlStmts.(*generated.SqlStatementsContext))
+        if sr, ok := stmtResults.(*parser.DDLResults); ok {
+            results.Results = append(results.Results, sr.Results...)
         }
     }
-    return &parser.DDLResult{Type: parser.DDLTypeUnknown}
+
+    return results
+}
+
+// VisitSqlStatements 访问 SQL 语句集合
+func (v *DDLVisitor) VisitSqlStatements(ctx *generated.SqlStatementsContext) interface{} {
+    results := &parser.DDLResults{}
+
+    for _, stmt := range ctx.AllSqlStatement() {
+        result := v.VisitSqlStatement(stmt.(*generated.SqlStatementContext))
+        if ddlResult, ok := result.(*parser.DDLResult); ok && ddlResult != nil {
+            results.Add(ddlResult)
+        }
+    }
+
+    return results
 }
 
 // VisitStatement 访问语句节点
@@ -327,7 +367,7 @@ func (v *DDLVisitor) visitCreateTable(ctx *generated.CreateTableContext) *parser
         Type:      parser.DDLTypeCreateTable,
         Database:  v.extractDatabaseName(ctx),
         Table:     v.extractTableName(ctx),
-        Statement: ctx.GetText(),
+        Statement: v.ddl,
     }
 
     // 解析列定义
@@ -346,7 +386,7 @@ func (v *DDLVisitor) visitAlterTable(ctx *generated.AlterTableContext) *parser.D
         Type:      parser.DDLTypeAlterTable,
         Database:  v.extractDatabaseName(ctx),
         Table:     v.extractTableName(ctx),
-        Statement: ctx.GetText(),
+        Statement: v.ddl,
     }
 
     // 解析 ALTER 子句
@@ -387,13 +427,13 @@ func NewNoopParser() *NoopParser {
 }
 
 // Parse 返回空结果（MongoDB 从 Change Stream 获取结构化数据）
-func (p *NoopParser) Parse(ctx context.Context, ddl string) (*parser.DDLResult, error) {
+func (p *NoopParser) Parse(ctx context.Context, ddl string) ([]*parser.DDLResult, error) {
     // MongoDB 的 Change Stream 机制已提供结构化的 DDL 事件
     // 不需要解析 SQL
-    return &parser.DDLResult{
+    return []*parser.DDLResult{{
         Type:      parser.DDLTypeUnknown,
         Statement: ddl,
-    }, nil
+    }}, nil
 }
 
 // SupportedTypes 返回空列表
@@ -539,20 +579,29 @@ func (s *MySQLSourceConnector) processDDL(binlogEvent *BinlogEvent) error {
     // 获取 Parser
     parser := parser.DefaultRegistry.Get("mysql")
 
-    // 解析 DDL
-    result, err := parser.Parse(context.Background(), binlogEvent.DDL)
+    // 解析 DDL（支持多条 DDL 语句）
+    results, err := parser.Parse(context.Background(), binlogEvent.DDL)
     if err != nil {
         return err
     }
 
-    // 根据 DDL 类型处理
-    switch result.Type {
-    case parser.DDLTypeCreateTable:
-        return s.handleCreateTable(result)
-    case parser.DDLTypeAlterTable:
-        return s.handleAlterTable(result)
-    case parser.DDLTypeDropTable:
-        return s.handleDropTable(result)
+    // 遍历所有解析结果
+    for _, result := range results {
+        // 根据 DDL 类型处理
+        switch result.Type {
+        case parser.DDLTypeCreateTable:
+            if err := s.handleCreateTable(result); err != nil {
+                return err
+            }
+        case parser.DDLTypeAlterTable:
+            if err := s.handleAlterTable(result); err != nil {
+                return err
+            }
+        case parser.DDLTypeDropTable:
+            if err := s.handleDropTable(result); err != nil {
+                return err
+            }
+        }
     }
 
     return nil
@@ -566,23 +615,58 @@ func (s *PostgreSQLSourceConnector) processDDL(pgEvent *PgEvent) error {
     // 获取 Parser
     parser := parser.DefaultRegistry.Get("postgresql")
 
-    // 解析 DDL
-    result, err := parser.Parse(context.Background(), pgEvent.DDL)
+    // 解析 DDL（支持多条 DDL 语句）
+    results, err := parser.Parse(context.Background(), pgEvent.DDL)
     if err != nil {
         return err
     }
 
-    // 根据 DDL 类型处理
-    switch result.Type {
-    case parser.DDLTypeCreateTable:
-        return s.handleCreateTable(result)
-    case parser.DDLTypeAlterTable:
-        return s.handleAlterTable(result)
-    case parser.DDLTypeDropTable:
-        return s.handleDropTable(result)
+    // 遍历所有解析结果
+    for _, result := range results {
+        // 根据 DDL 类型处理
+        switch result.Type {
+        case parser.DDLTypeCreateTable:
+            if err := s.handleCreateTable(result); err != nil {
+                return err
+            }
+        case parser.DDLTypeAlterTable:
+            if err := s.handleAlterTable(result); err != nil {
+                return err
+            }
+        case parser.DDLTypeDropTable:
+            if err := s.handleDropTable(result); err != nil {
+                return err
+            }
+        }
     }
 
     return nil
+}
+```
+
+### 解析多条 DDL 示例
+
+```go
+func ExampleParseMultipleDDL() {
+    p := mysql.NewParser()
+
+    // 输入包含多条 DDL 语句（以分号分隔）
+    ddl := "CREATE TABLE users (id INT); DROP TABLE temp;"
+
+    results, err := p.Parse(context.Background(), ddl)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Parsed %d DDL statements\n", len(results))
+    // Output: Parsed 2 DDL statements
+
+    for i, result := range results {
+        fmt.Printf("Statement %d: %s\n", i+1, result.Type)
+    }
+    // Output:
+    // Statement 1: create_table
+    // Statement 2: drop_table
 }
 ```
 
@@ -627,7 +711,7 @@ antlr4 -Dlanguage=Go -visitor \
 
 ```go
 func TestMySQLDDLParser_CreateTable(t *testing.T) {
-    parser := mysql.NewMySQLDDLParser()
+    p := mysql.NewParser()
 
     ddl := `CREATE TABLE users (
         id INT PRIMARY KEY,
@@ -635,12 +719,33 @@ func TestMySQLDDLParser_CreateTable(t *testing.T) {
         email VARCHAR(255) UNIQUE
     )`
 
-    result, err := parser.Parse(context.Background(), ddl)
+    results, err := p.Parse(context.Background(), ddl)
     require.NoError(t, err)
+    require.Len(t, results, 1)
 
+    result := results[0]
     assert.Equal(t, parser.DDLTypeCreateTable, result.Type)
     assert.Equal(t, "users", result.Table)
     assert.Len(t, result.TableChanges.AddedColumns, 3)
+}
+
+func TestMySQLDDLParser_MultipleStatements(t *testing.T) {
+    p := mysql.NewParser()
+
+    // 测试解析多条 DDL 语句
+    ddl := "CREATE TABLE users (id INT); DROP TABLE users;"
+
+    results, err := p.Parse(context.Background(), ddl)
+    require.NoError(t, err)
+    require.Len(t, results, 2)
+
+    // 验证第一条语句
+    assert.Equal(t, parser.DDLTypeCreateTable, results[0].Type)
+    assert.Equal(t, "users", results[0].Table)
+
+    // 验证第二条语句
+    assert.Equal(t, parser.DDLTypeDropTable, results[1].Type)
+    assert.Equal(t, "users", results[1].Table)
 }
 ```
 
@@ -671,9 +776,21 @@ func TestMySQLDDLParser_DebeziumCompatibility(t *testing.T) {
 | SQL Server Parser | ANTLR | 完整支持 T-SQL 方言，统一解析架构 |
 | MongoDB | noop | Change Stream 提供结构化输出 |
 | Grammar 来源 | grammars-v4 官方 | 可复用成熟的 grammar 定义 |
+| 多条 DDL 支持 | `[]*DDLResult` | 支持解析以分号分隔的多条 DDL 语句，提高实用性 |
 
 ---
 
-*文档版本：v2.0*
+*文档版本：v2.1*
 *创建时间：2026-05-07*
 *更新时间：2026-05-10*
+
+### 更新历史
+
+**v2.1 (2026-05-10)**
+- 修改 `Parse()` 接口返回类型为 `[]*DDLResult`，支持解析多条 DDL 语句
+- 添加 `DDLResults` 辅助类型用于 Visitor 收集结果
+- 更新所有 Parser 实现和测试用例
+
+**v2.0 (2026-05-09)**
+- 初始 ANTLR Parser 架构设计
+- 支持 MySQL、PostgreSQL、Oracle、SQL Server 四种数据库

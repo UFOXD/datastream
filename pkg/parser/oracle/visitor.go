@@ -23,16 +23,16 @@ func NewDDLVisitor() *DDLVisitor {
 // VisitSql_script visits the root node.
 func (v *DDLVisitor) VisitSql_script(ctx *generated.Sql_scriptContext) interface{} {
 	v.ddl = ctx.GetText()
+	results := &parser.DDLResults{}
+
 	for _, stmt := range ctx.AllUnit_statement() {
 		result := v.VisitUnit_statement(stmt.(*generated.Unit_statementContext))
-		if result != nil {
-			return result
+		if ddlResult, ok := result.(*parser.DDLResult); ok && ddlResult != nil {
+			results.Add(ddlResult)
 		}
 	}
-	return &parser.DDLResult{
-		Type:      parser.DDLTypeUnknown,
-		Statement: v.ddl,
-	}
+
+	return results
 }
 
 // VisitUnit_statement visits a unit statement node.
@@ -82,11 +82,24 @@ func (v *DDLVisitor) VisitCreate_table(ctx *generated.Create_tableContext) inter
 		Statement: v.ddl,
 	}
 
-	// Extract table name
-	if tableName := ctx.Tableview_name(); tableName != nil {
-		schema, table := extractTableviewName(tableName)
-		result.Database = schema
-		result.Table = table
+	// Oracle uses separate Schema_name() and Table_name() methods
+	// Get schema name
+	if schemaName := ctx.Schema_name(); schemaName != nil {
+		result.Database = strings.Trim(schemaName.GetText(), "\"")
+	}
+
+	// Get table name
+	if tableName := ctx.Table_name(); tableName != nil {
+		result.Table = strings.Trim(tableName.GetText(), "\"")
+	}
+
+	// Fallback to Tableview_name if Table_name is nil
+	if result.Table == "" {
+		if tableViewName := ctx.Tableview_name(); tableViewName != nil {
+			schema, table := extractTableviewName(tableViewName)
+			result.Database = schema
+			result.Table = table
+		}
 	}
 
 	result.TableChanges = &parser.TableChanges{
@@ -193,18 +206,22 @@ func (v *DDLVisitor) VisitDrop_index(ctx *generated.Drop_indexContext) interface
 		Statement: v.ddl,
 	}
 
-	// Extract index name from text
-	text := ctx.GetText()
-	upperText := strings.ToUpper(text)
-	idx := strings.Index(upperText, "INDEX")
-	if idx != -1 {
-		rest := text[idx+5:]
-		rest = strings.TrimSpace(rest)
-		parts := strings.Fields(rest)
-		if len(parts) > 0 {
-			name := strings.Trim(parts[0], "\"")
+	// Use ANTLR context method to get index name
+	if indexName := ctx.Index_name(); indexName != nil {
+		text := indexName.GetText()
+		text = strings.ReplaceAll(text, "\"", "")
+		// Handle schema.index format
+		if strings.Contains(text, ".") {
+			parts := strings.SplitN(text, ".", 2)
+			result.Database = parts[0]
 			result.IndexChanges = &parser.IndexChanges{
-				IndexName: name,
+				IndexName:    parts[1],
+				Operation:    "drop",
+				DatabaseName: parts[0],
+			}
+		} else {
+			result.IndexChanges = &parser.IndexChanges{
+				IndexName: text,
 				Operation: "drop",
 			}
 		}
@@ -254,29 +271,22 @@ func (v *DDLVisitor) VisitCreate_index(ctx *generated.Create_indexContext) inter
 		Statement: v.ddl,
 	}
 
-	// Extract index name from text
-	text := ctx.GetText()
-	upperText := strings.ToUpper(text)
-	idx := strings.Index(upperText, "INDEX")
-	if idx != -1 {
-		rest := text[idx+5:]
-		rest = strings.TrimSpace(rest)
-
-		// Skip UNIQUE keyword if present
-		if strings.HasPrefix(strings.ToUpper(rest), "UNIQUE") {
-			rest = strings.TrimSpace(rest[6:])
-		}
-
-		// Skip BITMAP keyword if present
-		if strings.HasPrefix(strings.ToUpper(rest), "BITMAP") {
-			rest = strings.TrimSpace(rest[6:])
-		}
-
-		parts := strings.Fields(rest)
-		if len(parts) > 0 {
-			name := strings.Trim(parts[0], "\"")
+	// Use ANTLR context method to get index name
+	if indexName := ctx.Index_name(); indexName != nil {
+		text := indexName.GetText()
+		text = strings.ReplaceAll(text, "\"", "")
+		// Handle schema.index format
+		if strings.Contains(text, ".") {
+			parts := strings.SplitN(text, ".", 2)
+			result.Database = parts[0]
 			result.IndexChanges = &parser.IndexChanges{
-				IndexName: name,
+				IndexName:    parts[1],
+				Operation:    "create",
+				DatabaseName: parts[0],
+			}
+		} else {
+			result.IndexChanges = &parser.IndexChanges{
+				IndexName: text,
 				Operation: "create",
 			}
 		}
@@ -301,6 +311,22 @@ func (v *DDLVisitor) VisitCreate_index(ctx *generated.Create_indexContext) inter
 // Helper functions
 
 func extractTableviewName(tableName generated.ITableview_nameContext) (schema, table string) {
+	if tableName == nil {
+		return "", ""
+	}
+
+	text := tableName.GetText()
+	text = strings.ReplaceAll(text, "\"", "")
+
+	// Check if there's a dot (schema.table format)
+	if strings.Contains(text, ".") {
+		parts := strings.SplitN(text, ".", 2)
+		return parts[0], parts[1]
+	}
+	return "", text
+}
+
+func extractTableName(tableName generated.ITable_nameContext) (schema, table string) {
 	if tableName == nil {
 		return "", ""
 	}

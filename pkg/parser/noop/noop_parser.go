@@ -20,11 +20,11 @@ func NewParser() *Parser {
 
 // Parse returns a basic DDLResult with unknown type.
 // The actual DDL handling is done by the database's CDC mechanism.
-func (p *Parser) Parse(ctx context.Context, ddl string) (*parser.DDLResult, error) {
-	return &parser.DDLResult{
+func (p *Parser) Parse(ctx context.Context, ddl string) ([]*parser.DDLResult, error) {
+	return []*parser.DDLResult{{
 		Type:      parser.DDLTypeUnknown,
 		Statement: ddl,
-	}, nil
+	}}, nil
 }
 
 // SupportedTypes returns an empty list as this parser doesn't parse any DDL types.

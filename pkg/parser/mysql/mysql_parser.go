@@ -22,8 +22,8 @@ func NewParser() *Parser {
 	}
 }
 
-// Parse parses a DDL statement and returns structured result.
-func (p *Parser) Parse(ctx context.Context, ddl string) (*parser.DDLResult, error) {
+// Parse parses one or more DDL statements and returns structured results.
+func (p *Parser) Parse(ctx context.Context, ddl string) ([]*parser.DDLResult, error) {
 	// 1. Create Lexer
 	input := antlr.NewInputStream(ddl)
 	lexer := generated.NewMySqlLexer(input)
@@ -38,13 +38,30 @@ func (p *Parser) Parse(ctx context.Context, ddl string) (*parser.DDLResult, erro
 	// 4. Traverse parse tree using Accept to dispatch to correct visitor method
 	result := tree.Accept(p.visitor)
 	if result == nil {
-		return &parser.DDLResult{
+		return []*parser.DDLResult{{
 			Type:      parser.DDLTypeUnknown,
 			Statement: ddl,
-		}, nil
+		}}, nil
 	}
 
-	return result.(*parser.DDLResult), nil
+	// Handle both single result and multiple results
+	switch r := result.(type) {
+	case *parser.DDLResults:
+		if len(r.Results) == 0 {
+			return []*parser.DDLResult{{
+				Type:      parser.DDLTypeUnknown,
+				Statement: ddl,
+			}}, nil
+		}
+		return r.Results, nil
+	case *parser.DDLResult:
+		return []*parser.DDLResult{r}, nil
+	default:
+		return []*parser.DDLResult{{
+			Type:      parser.DDLTypeUnknown,
+			Statement: ddl,
+		}}, nil
+	}
 }
 
 // SupportedTypes returns the DDL types this parser can handle.

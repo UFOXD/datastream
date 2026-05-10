@@ -38,13 +38,14 @@ func TestParse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := p.Parse(ctx, tt.ddl)
+			results, err := p.Parse(ctx, tt.ddl)
 			if err != nil {
 				t.Fatalf("Parse failed: %v", err)
 			}
-			if result == nil {
-				t.Fatal("Result should not be nil")
+			if len(results) == 0 {
+				t.Fatal("Results should not be empty")
 			}
+			result := results[0]
 			if result.Type != parser.DDLTypeUnknown {
 				t.Errorf("Expected DDLTypeUnknown, got %s", result.Type)
 			}

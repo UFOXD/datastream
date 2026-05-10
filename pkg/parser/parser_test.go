@@ -175,11 +175,11 @@ type mockParser struct {
 	supportedTypes []DDLType
 }
 
-func (m *mockParser) Parse(ctx context.Context, ddl string) (*DDLResult, error) {
-	return &DDLResult{
+func (m *mockParser) Parse(ctx context.Context, ddl string) ([]*DDLResult, error) {
+	return []*DDLResult{{
 		Type:      DDLTypeUnknown,
 		Statement: ddl,
-	}, nil
+	}}, nil
 }
 
 func (m *mockParser) SupportedTypes() []DDLType {
