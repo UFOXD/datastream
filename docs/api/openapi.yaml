@@ -471,10 +471,10 @@ components:
       properties:
         sourceType:
           type: string
-          enum: [mysql, postgres]
+          enum: [mysql, postgres, mongodb]
         sinkType:
           type: string
-          enum: [kafka, mysql]
+          enum: [kafka, mysql, postgres, mongodb]
         batchSize:
           type: integer
           default: 1000
