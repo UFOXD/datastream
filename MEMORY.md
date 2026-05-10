@@ -57,7 +57,7 @@ DataStream is a Go-based CDC (Change Data Capture) platform that refactors Debez
 | `pkg/pipeline` | ⚠️ Partial | 27.6% | Core pipeline structure |
 | `pkg/filter` | ✅ Complete | 100% | Filter interface, FilterChain, RuleFilter |
 | `pkg/transform` | ✅ Complete | 100% | Transformer interface, TransformChain, MappingTransformer |
-| `pkg/router` | ❌ **MISSING** | 0% | Router interface, TableRouter, PartitionRouter |
+| `pkg/router` | ✅ Complete | 100% | Router interface, TableRouter, PartitionRouter |
 
 ### Connector Layer - Source
 
@@ -102,21 +102,12 @@ DataStream is a Go-based CDC (Change Data Capture) platform that refactors Debez
 
 ---
 
-## 🔴 Missing Modules Detail
+## ✅ Pipeline Layer Complete
 
-### 1. Router Module (`pkg/router/`)
-
-**Design Doc:** `docs/design/pipeline-design.md` §5
-
-```
-Required Files:
-├── pkg/router/
-│   ├── router.go              # Router interface
-│   ├── table_router.go        # Table-based routing
-│   └── partition_router.go    # Partition routing
-```
-
-**Priority:** P1 - Architecture optimization (partially in pipeline/dispatcher.go)
+All Pipeline Layer modules have been implemented:
+- `pkg/filter` - Filter interface, FilterChain, RuleFilter
+- `pkg/transform` - Transformer interface, TransformChain, MappingTransformer
+- `pkg/router` - Router interface, TableRouter, PartitionRouter
 
 ---
 
@@ -151,13 +142,11 @@ Required Files:
 - [x] Create `pkg/transform/mapper.go` - Field mapping transformer
 - [x] Write unit tests
 
-#### Week 4: Router + Integration
-- [ ] Create `pkg/router/router.go` - Router interface
-- [ ] Create `pkg/router/table_router.go` - Table routing
-- [ ] Create `pkg/router/partition_router.go` - Partition routing
-- [ ] Refactor pipeline/dispatcher.go
-- [ ] Full Pipeline integration tests
-- [ ] Update documentation
+#### Week 4: Router + Integration ✅ COMPLETE
+- [x] Create `pkg/router/router.go` - Router interface
+- [x] Create `pkg/router/table.go` - TableRouter
+- [x] Create `pkg/router/partition.go` - PartitionRouter
+- [x] Write unit tests
 
 ---
 
@@ -218,7 +207,7 @@ Required Files:
 | `8bfc699` | 6 | Implement PostgreSQL logical replication source connector |
 | `64fc5c0` | 6 | Add unit tests for all connectors |
 | `5c37058` | 6 | Improve test coverage across multiple packages |
-| `16a048a` | 7 | Transform module with MappingTransformer |
+| `ea99146` | 7 | Router module with TableRouter and PartitionRouter |
 
 ---
 
