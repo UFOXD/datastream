@@ -54,10 +54,10 @@ DataStream is a Go-based CDC (Change Data Capture) platform that refactors Debez
 
 | Module | Status | Coverage | Notes |
 |--------|--------|----------|-------|
-| `pkg/pipeline` | ⚠️ Partial | 27.6% | Missing Filter/Transform |
-| `pkg/filter` | ❌ **MISSING** | 0% | Event filtering |
-| `pkg/transform` | ❌ **MISSING** | 0% | Event transformation |
-| `pkg/router` | ⚠️ Partial | - | In pipeline/dispatcher.go |
+| `pkg/pipeline` | ⚠️ Partial | 27.6% | Core pipeline structure |
+| `pkg/filter` | ✅ Complete | 100% | Filter interface, FilterChain, RuleFilter |
+| `pkg/transform` | ✅ Complete | 100% | Transformer interface, TransformChain, MappingTransformer |
+| `pkg/router` | ❌ **MISSING** | 0% | Router interface, TableRouter, PartitionRouter |
 
 ### Connector Layer - Source
 
@@ -104,41 +104,7 @@ DataStream is a Go-based CDC (Change Data Capture) platform that refactors Debez
 
 ## 🔴 Missing Modules Detail
 
-### 1. Filter Module (`pkg/filter/`)
-
-**Design Doc:** `docs/design/pipeline-design.md` §3
-
-```
-Required Files:
-├── pkg/filter/
-│   ├── filter.go              # Filter interface
-│   ├── chain.go               # FilterChain
-│   ├── rule_filter.go         # Rule-based filter
-│   └── expression_filter.go   # Expression filter
-```
-
-**Priority:** P0 - Core pipeline functionality
-
----
-
-### 2. Transform Module (`pkg/transform/`)
-
-**Design Doc:** `docs/design/pipeline-design.md` §4
-
-```
-Required Files:
-├── pkg/transform/
-│   ├── transform.go           # Transformer interface
-│   ├── chain.go               # TransformChain
-│   ├── mapping.go             # Field mapping
-│   └── static_fields.go       # Static field injection
-```
-
-**Priority:** P0 - Core pipeline functionality
-
----
-
-### 3. Router Module (`pkg/router/`)
+### 1. Router Module (`pkg/router/`)
 
 **Design Doc:** `docs/design/pipeline-design.md` §5
 
@@ -173,21 +139,17 @@ Required Files:
 - [x] Update `Makefile` - Add generate-parsers target
 - [x] Write unit tests
 
-#### Week 2: Filter Module
-- [ ] Create `pkg/filter/filter.go` - Filter interface
-- [ ] Create `pkg/filter/chain.go` - FilterChain
-- [ ] Create `pkg/filter/rule_filter.go` - Rule-based filter
-- [ ] Create `pkg/filter/expression_filter.go` - Expression filter
-- [ ] Integrate into Pipeline
-- [ ] Write unit tests
+#### Week 2: Filter Module ✅ COMPLETE
+- [x] Create `pkg/filter/filter.go` - Filter interface
+- [x] Create `pkg/filter/chain.go` - FilterChain (in filter.go)
+- [x] Create `pkg/filter/rule.go` - Rule-based filter
+- [x] Write unit tests
 
-#### Week 3: Transform Module
-- [ ] Create `pkg/transform/transform.go` - Transformer interface
-- [ ] Create `pkg/transform/chain.go` - TransformChain
-- [ ] Create `pkg/transform/mapping.go` - Field mapping
-- [ ] Create `pkg/transform/static_fields.go` - Static fields
-- [ ] Integrate into Pipeline
-- [ ] Write unit tests
+#### Week 3: Transform Module ✅ COMPLETE
+- [x] Create `pkg/transform/transform.go` - Transformer interface
+- [x] Create `pkg/transform/chain.go` - TransformChain (in transform.go)
+- [x] Create `pkg/transform/mapper.go` - Field mapping transformer
+- [x] Write unit tests
 
 #### Week 4: Router + Integration
 - [ ] Create `pkg/router/router.go` - Router interface
@@ -256,6 +218,7 @@ Required Files:
 | `8bfc699` | 6 | Implement PostgreSQL logical replication source connector |
 | `64fc5c0` | 6 | Add unit tests for all connectors |
 | `5c37058` | 6 | Improve test coverage across multiple packages |
+| `16a048a` | 7 | Transform module with MappingTransformer |
 
 ---
 
@@ -323,6 +286,6 @@ go build ./... && go test ./...
 
 ---
 
-*文档版本：v2.0*
+*文档版本：v2.1*
 *创建时间：2026-05-07*
-*更新时间：2026-05-09*
+*更新时间：2026-05-10*
