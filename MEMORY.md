@@ -211,6 +211,8 @@ All Pipeline Layer modules have been implemented:
 | `5c37058` | 6 | Improve test coverage across multiple packages |
 | `ea99146` | 7 | Router module with TableRouter and PartitionRouter |
 | `234c1b5` | 8 | PostgreSQL sink connector with COPY protocol |
+| `3e78df3` | 8 | Update MEMORY.md with PostgreSQL sink completion |
+| `a469559` | 8 | Refactor: reorganize directory structure (pkg→internal) |
 
 ---
 
