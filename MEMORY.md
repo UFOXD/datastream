@@ -210,6 +210,7 @@ All Pipeline Layer modules have been implemented:
 | `64fc5c0` | 6 | Add unit tests for all connectors |
 | `5c37058` | 6 | Improve test coverage across multiple packages |
 | `ea99146` | 7 | Router module with TableRouter and PartitionRouter |
+| `234c1b5` | 8 | PostgreSQL sink connector with COPY protocol |
 
 ---
 
