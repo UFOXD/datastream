@@ -1,4 +1,4 @@
-.PHONY: build test clean lint fmt
+.PHONY: build test clean lint fmt generate-parsers
 
 APP_NAME = datastream
 VERSION = $(shell git describe --tags --always 2>/dev/null || echo "dev")
@@ -51,6 +51,11 @@ proto:
 deps:
 	go mod download
 	go mod tidy
+
+# Generate ANTLR parsers for all supported databases
+generate-parsers:
+	@chmod +x scripts/generate-parsers.sh
+	@./scripts/generate-parsers.sh
 
 .PHONY: all
 all: deps build test

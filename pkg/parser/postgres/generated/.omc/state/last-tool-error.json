@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"cd /Users/peter/Codes/dts/datastream && go build ./pkg/parser/postgres/generated/ 2>&1\",\"description\":\"Test compile PostgreSQL\"}",
+  "error": "Exit code 1\n# github.com/UFOXD/datastream/pkg/parser/postgres/generated\npkg/parser/postgres/generated/postgresql_parser.go:5938:2: undefined: p\npkg/parser/postgres/generated/postgresql_parser.go:5940:2: undefined: p\npkg/parser/postgres/generated/postgresql_parser.go:5941:2: undefined: p\npkg/parser/postgres/generated/postgresql_parser.go:5942:2: undefined: p\npkg/parser/postgres/generated/postgresql_parser.go:5943:2: undefined: p\npkg/parser/postgres/generated/postgresql_parser.go:5944:2: undefined...",
+  "timestamp": "2026-05-10T11:15:52.522Z",
+  "retry_count": 3
+}

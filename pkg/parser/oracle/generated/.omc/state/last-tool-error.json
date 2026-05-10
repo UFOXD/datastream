@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"go build ./pkg/parser/oracle/generated/ 2>&1\",\"description\":\"Test compile Oracle\"}",
+  "error": "Exit code 1\nstat /Users/peter/Codes/dts/datastream/pkg/parser/oracle/generated/pkg/parser/oracle/generated: directory not found",
+  "timestamp": "2026-05-10T11:18:12.470Z",
+  "retry_count": 1
+}

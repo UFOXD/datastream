@@ -2,7 +2,7 @@
 
 ## 概述
 
-DataStream 的 SQL Parser 模块负责解析 DDL 语句和过滤表达式。根据 Debezium 的实践，只有 MySQL/MariaDB 需要完整的 SQL 解析器，其他数据库的 CDC 机制已提供结构化输出。
+DataStream 的 SQL Parser 模块负责解析 DDL 语句和过滤表达式。所有 SQL 数据库使用 ANTLR 构建完整 DDL 解析器，MongoDB 使用 noop parser。
 
 ---
 
@@ -11,16 +11,16 @@ DataStream 的 SQL Parser 模块负责解析 DDL 语句和过滤表达式。根�
 ### 核心思路
 
 1. **MySQL/MariaDB**: 使用 ANTLR 构建完整 DDL 解析器
-2. **PostgreSQL**: 利用 pgoutput 逻辑解码的结构化输出
-3. **MongoDB**: 无需 SQL Parser，直接处理 BSON/JSON
-4. **Oracle**: LogMiner + 数据字典查询
-5. **SQL Server**: CDC API 结构化输出
+2. **PostgreSQL**: 使用 ANTLR 构建完整 DDL 解析器
+3. **Oracle**: 使用 ANTLR 构建完整 DDL 解析器
+4. **SQL Server**: 使用 ANTLR 构建完整 DDL 解析器
+5. **MongoDB**: 无需 SQL Parser，直接处理 BSON/JSON
 
 ### Parser 角色定位
 
 | 场景 | 需要解析 | 说明 |
 |------|---------|------|
-| DDL 变更检测 | MySQL 需要解析 binlog 中的 DDL | 其他数据库 CDC 已结构化 |
+| DDL 变更检测 | 所有 SQL 数据库需要解析 DDL | 统一使用 ANTLR 解析 |
 | 同步范围过滤 | 解析表名、库名匹配规则 | 简单的通配符匹配 |
 | 路由规则 | 解析路由表达式 | 可选，高级功能 |
 
@@ -184,8 +184,20 @@ datastream/
 │   │       ├── mysql_lexer.go
 │   │       ├── mysql_parser.go
 │   │       └── ...
+│   ├── postgres/
+│   │   ├── postgres_parser.go # PostgreSQL Parser 实现
+│   │   ├── visitor.go         # DDL Visitor
+│   │   └── generated/         # ANTLR 生成的代码
+│   ├── oracle/
+│   │   ├── oracle_parser.go   # Oracle Parser 实现
+│   │   ├── visitor.go         # DDL Visitor
+│   │   └── generated/         # ANTLR 生成的代码
+│   ├── sqlserver/
+│   │   ├── sqlserver_parser.go # SQL Server Parser 实现
+│   │   ├── visitor.go          # DDL Visitor
+│   │   └── generated/          # ANTLR 生成的代码
 │   └── noop/
-│       └── noop_parser.go  # 空实现（用于不需要解析的数据库）
+│       └── noop_parser.go  # 空实现（仅用于 MongoDB）
 ```
 
 ### ANTLR Grammar
@@ -196,9 +208,11 @@ datastream/
 # 下载 MySQL ANTLR grammar
 # 来源: https://github.com/antlr/grammars-v4/tree/master/sql/mysql
 
-antlr4 -Dlanguage=Go -o generated MySQLLexer.g4
-antlr4 -Dlanguage=Go -o generated MySQLParser.g4
+antlr4 -Dlanguage=Go -visitor -o generated MySQLLexer.g4
+antlr4 -Dlanguage=Go -visitor -o generated MySQLParser.g4
 ```
+
+**重要：** 必须添加 `-visitor` 参数以生成 visitor 接口，用于 DDL 结构信息提取。
 
 ### MySQL Parser 实现
 
@@ -353,7 +367,7 @@ func (v *DDLVisitor) visitAlterTable(ctx *generated.AlterTableContext) *parser.D
 
 ## Noop Parser
 
-对于不需要完整 SQL 解析的数据库（PostgreSQL、MongoDB、SQL Server），提供空实现：
+对于不需要完整 SQL 解析的数据库（仅 MongoDB），提供空实现：
 
 ```go
 package noop
@@ -372,9 +386,9 @@ func NewNoopParser() *NoopParser {
     return &NoopParser{}
 }
 
-// Parse 返回空结果（这些数据库从 CDC 流中获取结构化数据）
+// Parse 返回空结果（MongoDB 从 Change Stream 获取结构化数据）
 func (p *NoopParser) Parse(ctx context.Context, ddl string) (*parser.DDLResult, error) {
-    // 这些数据库的 CDC 机制已提供结构化的 DDL 事件
+    // MongoDB 的 Change Stream 机制已提供结构化的 DDL 事件
     // 不需要解析 SQL
     return &parser.DDLResult{
         Type:      parser.DDLTypeUnknown,
@@ -387,6 +401,74 @@ func (p *NoopParser) SupportedTypes() []parser.DDLType {
     return []parser.DDLType{}
 }
 ```
+
+---
+
+## PostgreSQL ANTLR Parser
+
+### ANTLR Grammar
+
+使用 ANTLR grammars-v4 官方 PostgreSQL grammar：
+
+```bash
+# 下载 PostgreSQL ANTLR grammar
+# 来源: https://github.com/antlr/grammars-v4/tree/master/sql/postgresql
+
+antlr4 -Dlanguage=Go -visitor -o generated PostgreSQLLexer.g4
+antlr4 -Dlanguage=Go -visitor -o generated PostgreSQLParser.g4
+```
+
+**重要：** 必须添加 `-visitor` 参数以生成 visitor 接口。
+
+### 注意事项
+
+PostgreSQL grammar 需要自定义 `PostgreSQLLexerBase` 和 `PostgreSQLParserBase` 基类来处理：
+- 动态 SQL 语义
+- dollar-quoted 字符串
+- 嵌套注释
+
+---
+
+## Oracle ANTLR Parser
+
+### ANTLR Grammar
+
+使用 ANTLR grammars-v4 官方 PL/SQL grammar：
+
+```bash
+# 下载 Oracle PL/SQL ANTLR grammar
+# 来源: https://github.com/antlr/grammars-v4/tree/master/sql/plsql
+
+antlr4 -Dlanguage=Go -visitor -o generated PlSqlLexer.g4
+antlr4 -Dlanguage=Go -visitor -o generated PlSqlParser.g4
+```
+
+**重要：** 必须添加 `-visitor` 参数以生成 visitor 接口。
+
+### 注意事项
+
+PL/SQL grammar 需要自定义 `PlSqlLexerBase` 和 `PlSqlParserBase` 基类来处理：
+- PL/SQL 特有语法
+- 绑定变量
+- 条件编译
+
+---
+
+## SQL Server ANTLR Parser
+
+### ANTLR Grammar
+
+使用 ANTLR grammars-v4 官方 T-SQL grammar：
+
+```bash
+# 下载 SQL Server T-SQL ANTLR grammar
+# 来源: https://github.com/antlr/grammars-v4/tree/master/sql/tsql
+
+antlr4 -Dlanguage=Go -visitor -o generated TSqlLexer.g4
+antlr4 -Dlanguage=Go -visitor -o generated TSqlParser.g4
+```
+
+**重要：** 必须添加 `-visitor` 参数以生成 visitor 接口。
 
 ---
 
@@ -432,12 +514,17 @@ func init() {
     DefaultRegistry.Register("mysql", mysql.NewMySQLDDLParser())
     DefaultRegistry.Register("mariadb", mysql.NewMySQLDDLParser())
 
-    // 其他数据库使用 Noop Parser
-    noop := noop.NewNoopParser()
-    DefaultRegistry.Register("postgresql", noop)
-    DefaultRegistry.Register("mongodb", noop)
-    DefaultRegistry.Register("oracle", noop)
-    DefaultRegistry.Register("sqlserver", noop)
+    // 注册 PostgreSQL Parser
+    DefaultRegistry.Register("postgresql", postgres.NewPostgreSQLDDLParser())
+
+    // 注册 Oracle Parser
+    DefaultRegistry.Register("oracle", oracle.NewOracleDDLParser())
+
+    // 注册 SQL Server Parser
+    DefaultRegistry.Register("sqlserver", sqlserver.NewSQLServerDDLParser())
+
+    // MongoDB 使用 Noop Parser
+    DefaultRegistry.Register("mongodb", noop.NewNoopParser())
 }
 ```
 
@@ -472,17 +559,29 @@ func (s *MySQLSourceConnector) processDDL(binlogEvent *BinlogEvent) error {
 }
 ```
 
-### PostgreSQL 不需要解析
+### PostgreSQL 使用 Parser
 
 ```go
-func (s *PostgreSQLSourceConnector) processReplicationMessage(msg *pgoutput.Message) error {
-    switch m := msg.(type) {
-    case *pgoutput.RelationMessage:
-        // pgoutput 已经提供了结构化的表结构信息
-        return s.handleRelationMessage(m)
-    case *pgoutput.InsertMessage:
-        return s.handleInsert(m)
+func (s *PostgreSQLSourceConnector) processDDL(pgEvent *PgEvent) error {
+    // 获取 Parser
+    parser := parser.DefaultRegistry.Get("postgresql")
+
+    // 解析 DDL
+    result, err := parser.Parse(context.Background(), pgEvent.DDL)
+    if err != nil {
+        return err
     }
+
+    // 根据 DDL 类型处理
+    switch result.Type {
+    case parser.DDLTypeCreateTable:
+        return s.handleCreateTable(result)
+    case parser.DDLTypeAlterTable:
+        return s.handleAlterTable(result)
+    case parser.DDLTypeDropTable:
+        return s.handleDropTable(result)
+    }
+
     return nil
 }
 ```
@@ -506,8 +605,8 @@ func (s *PostgreSQLSourceConnector) processReplicationMessage(msg *pgoutput.Mess
 # 安装 ANTLR
 brew install antlr
 
-# 生成 Go 代码
-antlr4 -Dlanguage=Go \
+# 生成 Go 代码（必须添加 -visitor 参数）
+antlr4 -Dlanguage=Go -visitor \
     -o parser/mysql/generated \
     -package generated \
     MySQLLexer.g4 MySQLParser.g4
@@ -567,12 +666,14 @@ func TestMySQLDDLParser_DebeziumCompatibility(t *testing.T) {
 | 决策项 | 选择 | 原因 |
 |--------|------|------|
 | MySQL Parser | ANTLR | 与 Debezium 一致，完整支持 MySQL 方言 |
-| PostgreSQL | 不需要 | pgoutput 提供结构化输出 |
-| MongoDB | 不需要 | Change Stream 提供结构化输出 |
-| Grammar 来源 | Debezium/官方 | 可复用成熟的 grammar 定义 |
+| PostgreSQL Parser | ANTLR | 完整支持 PostgreSQL 方言，统一解析架构 |
+| Oracle Parser | ANTLR | 完整支持 PL/SQL 方言，统一解析架构 |
+| SQL Server Parser | ANTLR | 完整支持 T-SQL 方言，统一解析架构 |
+| MongoDB | noop | Change Stream 提供结构化输出 |
+| Grammar 来源 | grammars-v4 官方 | 可复用成熟的 grammar 定义 |
 
 ---
 
-*文档版本：v1.0*
+*文档版本：v2.0*
 *创建时间：2026-05-07*
-*更新时间：2026-05-07*
+*更新时间：2026-05-10*
