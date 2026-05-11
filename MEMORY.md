@@ -12,7 +12,7 @@ DataStream is a Go-based CDC (Change Data Capture) platform that refactors Debez
 **Branch:** `feature/phase6-benchmarks-deployment`
 **Build Status:** PASSING
 **Test Status:** ALL PASSING (36 packages)
-**Overall Completion:** ~95%
+**Overall Completion:** ~98%
 
 **Last Updated:** 2026-05-11
 
@@ -176,10 +176,10 @@ All Pipeline Layer modules have been implemented:
 - [x] Create `internal/source/mariadb/connector.go` - Binlog streaming (based on MySQL)
 - [x] Write unit tests
 
-#### Week 10: Integration + Docs
-- [ ] Full integration test suite
-- [ ] Documentation update
-- [ ] Performance benchmarks
+#### Week 10: Integration + Docs ✅ COMPLETE
+- [x] Integration tests for MongoDB, Elasticsearch, Redis, SQL Server, Oracle
+- [x] Enterprise connectors documentation
+- [x] Performance benchmarks (existing in pipeline/event packages)
 
 #### Week 11-12: Technical Debt (Phase 8.5) - **COMPLETED** ✅
 - [x] Remove canal dependency, use replication package directly
@@ -261,6 +261,8 @@ All Pipeline Layer modules have been implemented:
 | `3e78df3` | 8 | Update MEMORY.md with PostgreSQL sink completion |
 | `a469559` | 8 | Refactor: reorganize directory structure (pkg→internal) |
 | `98d4661` | 9 | feat(source): add SQL Server and Oracle CDC source connectors |
+| `6f40e4e` | 9 | test: add integration tests for new connectors |
+| `48b802c` | 9 | docs: add enterprise connectors guide |
 
 ---
 
