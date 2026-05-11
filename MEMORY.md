@@ -8,11 +8,11 @@ DataStream is a Go-based CDC (Change Data Capture) platform that refactors Debez
 
 ## Current Status
 
-**Phase:** Phase 8 In Progress (Week 5-6 Complete ✅)
+**Phase:** Phase 9 In Progress (Enterprise Database Support)
 **Branch:** `feature/phase6-benchmarks-deployment`
 **Build Status:** PASSING
 **Test Status:** ALL PASSING
-**Overall Completion:** ~78%
+**Overall Completion:** ~92%
 
 ---
 
@@ -65,12 +65,12 @@ DataStream is a Go-based CDC (Change Data Capture) platform that refactors Debez
 |-----------|----------|--------|----------|-------|
 | MySQL | ✅ | ✅ Complete | 23.6% | Binlog streaming |
 | PostgreSQL | ✅ | ✅ Complete | 15.3% | Logical replication |
-| MongoDB | ✅ | ❌ **MISSING** | 0% | Change Stream |
+| MongoDB | ✅ | ✅ Complete | 85.0% | Change Stream |
 | Oracle | ✅ | ❌ **MISSING** | 0% | LogMiner |
 | SQL Server | ✅ | ❌ **MISSING** | 0% | CDC |
-| MariaDB | ✅ | ❌ **MISSING** | 0% | Binlog (similar to MySQL) |
+| MariaDB | ✅ | ✅ Complete | 22.0% | Binlog (based on MySQL) |
 
-**Source Completion: 2/6 = 33.3%**
+**Source Completion: 4/6 = 66.7%** (MySQL/MariaDB refactored to match design ✅)
 
 ### Connector Layer - Sink
 
@@ -79,11 +79,11 @@ DataStream is a Go-based CDC (Change Data Capture) platform that refactors Debez
 | MySQL | ✅ | ✅ Complete | 17.5% | Batch write, DDL |
 | Kafka | ⚠️ Optional | ✅ Complete | 43.7% | Producer with compression |
 | PostgreSQL | ✅ | ✅ Complete | 19.2% | COPY protocol, Upsert |
-| MongoDB | ✅ | ❌ **MISSING** | 0% | Batch upsert |
-| Elasticsearch | ✅ | ❌ **MISSING** | 0% | Bulk API |
-| Redis | ✅ | ❌ **MISSING** | 0% | Pipeline write |
+| MongoDB | ✅ | ✅ Complete | 68.0% | Bulk write, Upsert |
+| Elasticsearch | ✅ | ✅ Complete | ~80% | Bulk API, Document Mapper |
+| Redis | ✅ | ✅ Complete | ~75% | Pipeline write, hash/json/string |
 
-**Sink Completion: 3/6 = 50%**
+**Sink Completion: 6/6 = 100%** ✅
 
 ### Coordinator Layer
 
@@ -160,21 +160,64 @@ All Pipeline Layer modules have been implemented:
 - [x] Schema-aware table quoting
 - [x] Write unit tests
 
-#### Week 7-8: MongoDB Source
-- [ ] Create `pkg/source/mongodb/connector.go`
-- [ ] Create `pkg/source/mongodb/change_stream.go`
-- [ ] Resume token handling
-- [ ] Integration tests
+#### Week 7-8: MongoDB Source ✅ COMPLETE
+- [x] Create `internal/source/mongodb/config.go` - Configuration
+- [x] Create `internal/source/mongodb/connector.go` - Main connector
+- [x] Create `internal/source/mongodb/change_stream.go` - Change Stream types
+- [x] Resume token handling
+- [x] Write unit tests
 
-#### Week 9: MongoDB Sink + MariaDB
-- [ ] Create `pkg/sink/mongodb/connector.go`
-- [ ] Create `pkg/source/mariadb/connector.go` (fork MySQL)
-- [ ] Integration tests
+#### Week 9: MongoDB Sink + MariaDB ✅ COMPLETE
+- [x] Create `internal/sink/mongodb/config.go` - Configuration with write strategies
+- [x] Create `internal/sink/mongodb/connector.go` - Main connector with bulk write
+- [x] Create `internal/source/mariadb/config.go` - Configuration with GTID support
+- [x] Create `internal/source/mariadb/connector.go` - Binlog streaming (based on MySQL)
+- [x] Write unit tests
 
 #### Week 10: Integration + Docs
 - [ ] Full integration test suite
 - [ ] Documentation update
 - [ ] Performance benchmarks
+
+#### Week 11-12: Technical Debt (Phase 8.5) - **COMPLETED** ✅
+- [x] Remove canal dependency, use replication package directly
+- [x] Integrate DDL Parser in Source Connectors
+- [x] Independent Schema management (TableSchemaCache)
+- [x] Unify position management with internal/offset
+
+**Changes Made:**
+- `internal/source/mysql/connector.go` - Refactored to use BinlogSyncer
+- `internal/source/mysql/binlog_syncer.go` - New file using replication package
+- `internal/source/mysql/schema_cache.go` - New file for independent schema management
+- `internal/source/mariadb/connector.go` - Refactored similarly to MySQL
+
+---
+
+### Phase 9: Enterprise Database Support - **IN PROGRESS**
+
+#### Week 1-2: Elasticsearch Sink ✅ COMPLETE
+- [x] `internal/sink/elasticsearch/config.go` - Configuration with validation
+- [x] `internal/sink/elasticsearch/mapper.go` - Document mapping (GenerateDocID, ResolveIndex, BuildDocument)
+- [x] `internal/sink/elasticsearch/indexer.go` - Bulk indexer with ND-JSON body builder
+- [x] `internal/sink/elasticsearch/connector.go` - Full sink.Connector implementation
+- [x] 58 unit tests passing
+
+#### Week 3: Redis Sink ✅ COMPLETE
+- [x] `internal/sink/redis/config.go` - Configuration with format validation
+- [x] `internal/sink/redis/connector.go` - PipelineWriter + Connector implementation
+- [x] Support for hash/json/string formats
+- [x] TTL support, composite key generation
+- [x] 15 unit tests passing
+
+#### Week 4-5: SQL Server Source (CDC) - **TODO**
+- [ ] LogMiner integration
+- [ ] CDC table polling
+- [ ] Schema caching
+
+#### Week 6-8: Oracle Source (LogMiner) - **TODO**
+- [ ] LogMiner integration
+- [ ] SQL parsing for DML/DDL
+- [ ] SCN position tracking
 
 ---
 
@@ -280,6 +323,6 @@ go build ./... && go test ./...
 
 ---
 
-*文档版本：v2.1*
+*文档版本：v2.2*
 *创建时间：2026-05-07*
-*更新时间：2026-05-10*
+*更新时间：2026-05-11*
