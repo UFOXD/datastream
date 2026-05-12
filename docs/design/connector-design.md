@@ -2072,4 +2072,474 @@ func (w *SinkWorker) flush() {
 
 ---
 
+## 9. 表结构存储与更新机制
+
+### 9.1 概述
+
+不同类型的连接器对表结构信息有不同的存储和管理策略：
+
+| 连接器类型 | Schema 来源 | 存储方式 | DDL 后更新策略 |
+|-----------|-------------|---------|---------------|
+| MySQL/MariaDB | INFORMATION_SCHEMA | 内存缓存 | Invalidate + 懒加载 |
+| PostgreSQL | pg_catalog | 内存缓存 | Invalidate + 懒加载 |
+| SQL Server | sys.columns/INFORMATION_SCHEMA | 内存缓存 | Invalidate + 懒加载 |
+| Oracle | ALL_TAB_COLUMNS | 内存缓存 | Invalidate + 懒加载 |
+| MongoDB | 集合文档结构 | 无需缓存 | Change Stream 自动处理 |
+| Kafka | 无 Schema | 无 | N/A (Schema Registry 可选) |
+| Elasticsearch | Index Mapping | 无需缓存 | 动态映射或预定义 |
+| Redis | 无 Schema | 无 | N/A |
+
+---
+
+### 9.2 关系型数据库 Schema 缓存机制
+
+以 MySQL 为例说明关系型数据库的 Schema 缓存机制：
+
+#### 9.2.1 架构图
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    MySQL Schema 缓存架构                     │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  BinlogSyncer                                               │
+│       │                                                     │
+│       ▼                                                     │
+│  ┌─────────────────┐                                        │
+│  │  QueryEvent     │  (DDL语句: CREATE/ALTER/DROP)         │
+│  └────────┬────────┘                                        │
+│           │                                                 │
+│           ▼                                                 │
+│  ┌─────────────────┐      ┌─────────────────┐              │
+│  │  DDL Parser     │──────▶ 解析DDL语句      │              │
+│  │  (ANTLR)        │      │ 提取表名/库名    │              │
+│  └────────┬────────┘      └─────────────────┘              │
+│           │                                                 │
+│           ▼                                                 │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │              TableSchemaCache                        │   │
+│  │  ┌─────────────────────────────────────────────────┐│   │
+│  │  │  map[string]*event.TableInfo                    ││   │
+│  │  │  key: "database.table"                          ││   │
+│  │  │                                                 ││   │
+│  │  │  • Invalidate(db, table) → 删除缓存             ││   │
+│  │  │  • Get(db, table) → 查询DB + 缓存               ││   │
+│  │  │  • Update(db, table, schema) → 更新缓存         ││   │
+│  │  └─────────────────────────────────────────────────┘│   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 9.2.2 核心数据结构
+
+```go
+// TableSchemaCache 表结构缓存
+type TableSchemaCache struct {
+    mu      sync.RWMutex
+    schemas map[string]*event.TableInfo  // key: "database.table"
+    db      *sql.DB
+}
+
+// TableInfo 表结构信息
+type TableInfo struct {
+    Database          string        // 数据库名
+    Schema            string        // Schema 名（PostgreSQL/Oracle）
+    Table             string        // 表名
+    Columns           []ColumnInfo  // 列信息
+    PrimaryKeyColumns []string      // 主键列
+}
+
+// ColumnInfo 列信息
+type ColumnInfo struct {
+    Name     string  // 列名
+    Type     string  // 数据类型 (e.g., "varchar(255)", "int(11)")
+    Nullable bool    // 是否允许 NULL
+}
+```
+
+#### 9.2.3 DDL 处理流程
+
+```go
+// handleQueryEvent 处理 DDL 事件
+func (s *BinlogSyncer) handleQueryEvent(ev *replication.BinlogEvent) error {
+    query := string(queryEvent.Query)
+    
+    // 1. 检查是否是 DDL 语句
+    if !isDDL(query) {
+        return nil
+    }
+    
+    // 2. 使用 DDL Parser 解析 DDL 语句
+    var ddlResult *parser.DDLResult
+    if s.parser != nil {
+        results, err := s.parser.Parse(s.ctx, query)
+        if err == nil && len(results) > 0 {
+            ddlResult = results[0]
+        }
+    }
+    
+    // 3. 使缓存失效（关键步骤）
+    if ddlResult != nil && ddlResult.Table != "" {
+        // 已知表：只删除该表的缓存
+        s.schemaCache.Invalidate(ddlResult.Database, ddlResult.Table)
+    } else {
+        // 未知表：清空所有缓存
+        s.schemaCache.InvalidateAll()
+    }
+    
+    // 4. 发送 DDL 事件到下游
+    changeEvent := &event.ChangeEvent{
+        Type: event.EventTypeDDL,
+        Metadata: map[string]string{
+            "ddl":     query,
+            "ddlType": string(ddlResult.Type),
+        },
+    }
+    s.events <- changeEvent
+    
+    return nil
+}
+```
+
+#### 9.2.4 缓存更新策略
+
+| DDL 操作 | 缓存处理 | 说明 |
+|---------|---------|------|
+| CREATE TABLE | `Invalidate(db, table)` | 下次访问时从DB查询新表结构 |
+| ALTER TABLE | `Invalidate(db, table)` | 删除旧缓存，下次查询获取新结构 |
+| DROP TABLE | `Invalidate(db, table)` | 删除缓存，表已不存在 |
+| TRUNCATE TABLE | `Invalidate(db, table)` | 不改变结构，但使缓存失效 |
+| RENAME TABLE | `InvalidateAll()` | 可能影响多表，清空全部 |
+
+#### 9.2.5 懒加载查询
+
+```go
+// Get 获取表结构（懒加载）
+func (c *TableSchemaCache) Get(ctx context.Context, database, table string) (*event.TableInfo, error) {
+    key := database + "." + table
+    
+    // 1. 先查缓存
+    c.mu.RLock()
+    if schema, ok := c.schemas[key]; ok {
+        c.mu.RUnlock()
+        return schema.Clone(), nil
+    }
+    c.mu.RUnlock()
+    
+    // 2. 缓存未命中，从 INFORMATION_SCHEMA 查询
+    schema, err := c.querySchema(ctx, database, table)
+    if err != nil {
+        return nil, err
+    }
+    
+    // 3. 写入缓存
+    c.mu.Lock()
+    c.schemas[key] = schema
+    c.mu.Unlock()
+    
+    return schema.Clone(), nil
+}
+
+// querySchema 从数据库查询表结构
+func (c *TableSchemaCache) querySchema(ctx context.Context, database, table string) (*event.TableInfo, error) {
+    rows, err := c.db.QueryContext(ctx, `
+        SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_TYPE
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+        ORDER BY ORDINAL_POSITION
+    `, database, table)
+    // ... 解析结果
+}
+```
+
+#### 9.2.6 其他关系型数据库
+
+**PostgreSQL:**
+```go
+// 查询 pg_catalog
+SELECT column_name, data_type, is_nullable
+FROM pg_catalog.pg_columns
+WHERE table_schema = $1 AND table_name = $2
+ORDER BY ordinal_position
+```
+
+**SQL Server:**
+```go
+// 查询 INFORMATION_SCHEMA
+SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_SCHEMA = @schema AND TABLE_NAME = @table
+ORDER BY ORDINAL_POSITION
+```
+
+**Oracle:**
+```go
+// 查询 ALL_TAB_COLUMNS
+SELECT COLUMN_NAME, DATA_TYPE, NULLABLE
+FROM ALL_TAB_COLUMNS
+WHERE OWNER = :owner AND TABLE_NAME = :table
+ORDER BY COLUMN_ID
+```
+
+---
+
+### 9.3 NoSQL 数据库 Schema 机制
+
+#### 9.3.1 MongoDB (无 Schema)
+
+MongoDB 是 Schema-less 数据库，文档结构可以动态变化：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    MongoDB Schema 处理                      │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Change Stream                                              │
+│       │                                                     │
+│       ▼                                                     │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  {                                                   │   │
+│  │    "operationType": "insert",                        │   │
+│  │    "fullDocument": {                                 │   │
+│  │      "_id": ObjectId("..."),                         │   │
+│  │      "name": "John",         // 字段可能存在          │   │
+│  │      "age": 30,              // 字段可能不存在        │   │
+│  │      "email": "john@example.com"  // 动态添加        │   │
+│  │    }                                                 │   │
+│  │  }                                                   │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+│  特点：                                                     │
+│  • 无需缓存表结构                                           │
+│  • Change Stream 自动包含完整文档                           │
+│  • DDL 概念不同 (createCollection/dropCollection)          │
+│  • Sink 端直接使用文档字段                                  │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**MongoDB Source 处理逻辑：**
+```go
+// 无需 Schema Cache
+func (c *Connector) handleChangeEvent(changeDoc bson.M) *event.ChangeEvent {
+    // Change Stream 已包含完整文档
+    // 无需额外查询 Schema
+    return &event.ChangeEvent{
+        Type: mapOperationType(changeDoc["operationType"]),
+        After: extractRowData(changeDoc["fullDocument"]),
+    }
+}
+```
+
+---
+
+### 9.4 消息队列 Schema 机制
+
+#### 9.4.1 Kafka (无内置 Schema)
+
+Kafka 本身不存储 Schema，事件以字节流形式传输：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Kafka Schema 处理                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Producer (Source)                                          │
+│       │                                                     │
+│       ▼                                                     │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  序列化选项：                                         │   │
+│  │                                                       │   │
+│  │  1. JSON (默认)                                       │   │
+│  │     {"id": 1, "name": "John", "op": "INSERT"}        │   │
+│  │                                                       │   │
+│  │  2. Avro + Schema Registry (推荐)                     │   │
+│  │     - Schema 存储在 Registry                          │   │
+│  │     - 消息只包含 schema_id + 数据                     │   │
+│  │                                                       │   │
+│  │  3. Protobuf                                          │   │
+│  │     - 需要预定义 .proto 文件                          │   │
+│  └─────────────────────────────────────────────────────┘   │
+│       │                                                     │
+│       ▼                                                     │
+│  Kafka Topic                                                │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  Topic: datastream.events                            │   │
+│  │  Partition 0: [Message1, Message2, ...]              │   │
+│  │  Partition 1: [Message3, Message4, ...]              │   │
+│  │                                                       │   │
+│  │  消息格式: Key + Value (字节数组)                     │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+│  Schema Registry (可选):                                    │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  subjects:                                            │   │
+│  │    datastream.events-value:                          │   │
+│  │      1: {"type": "record", "fields": [...]}          │   │
+│  │      2: {"type": "record", "fields": [...]}  // v2   │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Kafka Sink 配置示例：**
+```toml
+[sink.properties]
+# 序列化格式
+value_serializer = "json"  # json, avro, protobuf
+
+# Schema Registry (Avro/Protobuf 需要)
+schema_registry_url = "http://localhost:8081"
+
+# DDL 处理
+# Kafka 不执行 DDL，只传递 Schema 变更事件
+# 下游消费者需要自行处理 Schema 演进
+```
+
+---
+
+### 9.5 搜索引擎 Schema 机制
+
+#### 9.5.1 Elasticsearch (动态映射)
+
+Elasticsearch 支持 Schema-less 和显式 Mapping 两种模式：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  Elasticsearch Schema 处理                  │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  模式一：动态映射 (Dynamic Mapping)                          │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  PUT /datastream-users/_doc/1                       │   │
+│  │  {                                                   │   │
+│  │    "name": "John",      // 自动映射为 text           │   │
+│  │    "age": 30,           // 自动映射为 integer        │   │
+│  │    "created_at": "2024-01-01"  // 自动映射为 date    │   │
+│  │  }                                                   │   │
+│  │                                                       │   │
+│  │  ES 自动推断类型并创建 Mapping                        │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+│  模式二：显式映射 (Explicit Mapping)                         │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  PUT /datastream-users                              │   │
+│  │  {                                                   │   │
+│  │    "mappings": {                                     │   │
+│  │      "properties": {                                 │   │
+│  │        "name": {"type": "keyword"},                  │   │
+│  │        "age": {"type": "integer"},                   │   │
+│  │        "created_at": {"type": "date"}                │   │
+│  │      }                                               │   │
+│  │    }                                                 │   │
+│  │  }                                                   │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+│  DDL 处理：                                                 │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  ALTER TABLE 添加新列 →                              │   │
+│  │    • 动态映射: 自动添加新字段                         │   │
+│  │    • 显式映射: 需要手动更新 Mapping (PUT mapping)    │   │
+│  │                                                       │   │
+│  │  ALTER TABLE 修改列类型 →                            │   │
+│  │    • ES 不支持修改已存在字段的类型                    │   │
+│  │    • 需要 reindex 到新 Index                         │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Elasticsearch Sink 配置示例：**
+```toml
+[sink.properties]
+# 索引命名模式
+index_pattern = "{database}_{table}"
+
+# 文档 ID 策略
+doc_id_strategy = "primary_key"  # 使用主键作为文档 ID
+
+# Mapping 策略
+mapping_mode = "dynamic"  # dynamic 或 explicit
+```
+
+---
+
+### 9.6 缓存数据库 Schema 机制
+
+#### 9.6.1 Redis (无 Schema)
+
+Redis 是 Key-Value 存储，无 Schema 概念：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Redis Schema 处理                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  数据格式由 Sink 配置决定：                                  │
+│                                                             │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  格式一：Hash (推荐)                                  │   │
+│  │  HSET ds:users:123 name "John" age "30"             │   │
+│  │                                                       │   │
+│  │  格式二：JSON String                                  │   │
+│  │  SET ds:users:123 '{"name":"John","age":30}'        │   │
+│  │                                                       │   │
+│  │  格式三：String (简单值)                              │   │
+│  │  SET ds:users:123:name "John"                        │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+│  DDL 处理：                                                 │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  • Redis 无 DDL 概念                                  │   │
+│  │  • 新字段直接写入 Key                                 │   │
+│  │  • 字段删除：不写入该字段                             │   │
+│  │  • 类型变更：覆盖写入新值                             │   │
+│  │                                                       │   │
+│  │  注意事项：                                            │   │
+│  │  • Hash 格式可支持字段级更新                          │   │
+│  │  • JSON 格式需要整体覆盖                              │   │
+│  │  • 旧数据可能存在已删除字段                           │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Redis Sink 配置示例：**
+```toml
+[sink.properties]
+# 存储格式
+format = "hash"  # hash, json, string
+
+# Key 命名模式
+key_pattern = "{database}:{table}:{id}"
+
+# TTL 设置
+ttl = 0  # 0 表示永不过期
+```
+
+---
+
+### 9.7 Schema 演进策略总结
+
+| 场景 | 关系型数据库 | MongoDB | Kafka | Elasticsearch | Redis |
+|------|-------------|---------|-------|---------------|-------|
+| 添加列 | ALTER TABLE → Invalidate Cache | 自动支持 | 新字段写入 | 动态映射自动添加 | 直接写入 |
+| 删除列 | ALTER TABLE → Invalidate Cache | 文档中不存在 | 不写入该字段 | 字段仍存在(需reindex) | 不写入 |
+| 修改列类型 | ALTER TABLE → Invalidate Cache | 类型可变 | Schema Registry演进 | 需reindex新Index | 覆盖写入 |
+| 重命名列 | ALTER TABLE → Invalidate Cache | 需要迁移 | 新字段名 | 需reindex | 写入新Key |
+| DDL传播 | 执行DDL | createCollection事件 | 发送DDL消息 | 更新Mapping(可选) | N/A |
+
+---
+
+### 9.8 设计原则
+
+1. **缓存失效优先**：DDL 时先使缓存失效，避免使用过时结构
+2. **懒加载**：只在需要时查询 Schema，减少数据库压力
+3. **并发安全**：使用读写锁保护 Schema 缓存
+4. **优雅降级**：DDL 解析失败时清空全部缓存，保证一致性
+5. **Sink 端自治**：Kafka/ES/Redis 等 Sink 根据自身特性处理 Schema 变更
+
+---
+
 *返回 [设计文档总览](./Design.md)*
