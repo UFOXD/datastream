@@ -1,6 +1,6 @@
 # DataStream Project Memory
 
-> Last Updated: 2026-05-10
+> Last Updated: 2026-05-13
 
 ## Project Overview
 
@@ -60,6 +60,17 @@ DataStream is a Go-based CDC (Change Data Capture) platform that refactors Debez
 | `pkg/filter` | ✅ Complete | 100% | Filter interface, FilterChain, RuleFilter |
 | `pkg/transform` | ✅ Complete | 100% | Transformer interface, TransformChain, MappingTransformer |
 | `pkg/router` | ✅ Complete | 100% | Router interface, TableRouter, PartitionRouter |
+
+### Internal Pipeline Modules (2026-05-13 新增)
+
+| Module | Status | Coverage | Notes |
+|--------|--------|----------|-------|
+| `internal/filter` | ✅ Complete | 100% | ExpressionFilter with table/field/regex matching |
+| `internal/transform` | ✅ Complete | 100% | CustomTransformer, built-in transformers (AddField, RemoveField, RenameField, Timestamp) |
+| `internal/pipeline` | ✅ Complete | 100% | BackpressureController with high/low watermarks |
+| `internal/ratelimit` | ✅ Complete | 100% | Rate limiter using golang.org/x/time/rate |
+| `internal/sink` | ✅ Complete | 100% | HashDispatcher, ConcurrentSinkWriter, RowIdentifier |
+| `internal/source` | ✅ Complete | 100% | SnapshotCoordinator, SnapshotConcurrencyConfig |
 
 ### Connector Layer - Source
 
@@ -330,6 +341,57 @@ go build ./... && go test ./...
 
 ---
 
-*文档版本：v2.2*
+*文档版本：v2.3*
 *创建时间：2026-05-07*
-*更新时间：2026-05-11*
+*更新时间：2026-05-13*
+
+---
+
+## 2026-05-13 阶段完成记录
+
+### 完成的任务
+
+| Task ID | 任务名称 | 状态 |
+|---------|---------|------|
+| #87 | ExpressionFilter Tests | ✅ 完成 |
+| #86 | CustomTransformer Foundation | ✅ 完成 |
+| #90 | BackpressureController | ✅ 完成 |
+| #91 | RateLimiter Tests | ✅ 完成 |
+
+### 新增/修改的文件
+
+| 文件路径 | 操作类型 | 说明 |
+|---------|---------|------|
+| `internal/filter/expression.go` | 修改 | 修复regex pattern handling, RowData处理 |
+| `internal/filter/expression_test.go` | 新增 | ExpressionFilter完整测试 |
+| `internal/transform/custom.go` | 新增 | CustomTransformer实现，内置转换器 |
+| `internal/transform/custom_test.go` | 新增 | CustomTransformer测试 |
+| `internal/pipeline/backpressure.go` | 新增 | BackpressureController流控实现 |
+| `internal/pipeline/backpressure_test.go` | 新增 | BackpressureController测试 |
+| `internal/ratelimit/ratelimit.go` | 新增 | RateLimiter实现 |
+| `internal/ratelimit/ratelimit_test.go` | 新增 | RateLimiter测试 |
+| `go.mod` | 修改 | 新增 golang.org/x/time 依赖 |
+
+### 关键决策记录
+
+1. **ExpressionFilter regex修复**: 使用parseValue后的值（无引号）作为regex pattern，而非原始字符串
+2. **BackpressureController resume条件**: 同时检查queue usage和latency，任一超标都触发pause
+3. **RateLimiter依赖**: 使用 golang.org/x/time/rate 包实现令牌桶限流
+
+### Git Commits
+
+| Commit | Description |
+|--------|-------------|
+| `54a6af4` | test(filter): add comprehensive tests for ExpressionFilter |
+| `5a854f7` | feat(transform): add CustomTransformer foundation with built-in transformers |
+| `3812a82` | feat(pipeline): add BackpressureController for flow control |
+| `42a13b5` | test(ratelimit): add comprehensive tests for RateLimiter |
+
+### 技术债务
+
+无新增技术债务。
+
+### 下一阶段计划
+
+- 继续Phase 6剩余任务
+- 集成测试验证各模块协作
