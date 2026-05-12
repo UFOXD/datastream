@@ -6,6 +6,27 @@
 
 ---
 
+## 强制使用 design-driven-implementation Skill
+
+**所有开发任务必须遵循 `design-driven-implementation` skill 的方法论执行。**
+
+触发条件（任一满足即触发）：
+- 开始任何代码实现任务
+- 发现设计问题需要讨论
+- 需要修改或补充设计文档
+- 阶段验收检查
+
+调用方式：`/oh-my-claudecode:design-driven-implementation`
+
+**核心流程**：
+```
+设计文档 > 实施计划 > 代码实现 > 验收对照
+```
+
+**任何代码实现必须能够追溯到设计文档中的定义。**
+
+---
+
 ## 目录结构规范
 
 Go项目必须遵循标准目录结构，区分可复用库与业务代码：

@@ -2,11 +2,14 @@ package sink
 
 import (
 	"context"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/UFOXD/datastream/pkg/event"
+	"github.com/UFOXD/datastream/pkg/logutil"
+	"go.uber.org/zap"
 )
 
 // ConcurrentSinkConfig holds configuration for concurrent writing.
@@ -45,6 +48,9 @@ type ConcurrentSinkWriter struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	closeOnce     sync.Once
+	batchesFailed int64
 }
 
 // NewConcurrentSinkWriter creates a new ConcurrentSinkWriter.
@@ -123,14 +129,17 @@ func (w *ConcurrentSinkWriter) WriteBatch(ctx context.Context, events []*event.C
 // Close stops all workers gracefully, flushing any buffered events.
 // It closes the dispatcher channels so workers drain and exit naturally,
 // then waits for all workers to finish before returning.
+// Safe to call multiple times; only the first call has any effect.
 func (w *ConcurrentSinkWriter) Close() error {
-	// Close dispatcher channels — workers will drain remaining events then exit
-	// via the channel-closed (!ok) path.
-	w.dispatcher.Close()
-	// Wait for all workers to finish draining and flushing.
-	w.wg.Wait()
-	// Cancel the context last (for any callers holding it).
-	w.cancel()
+	w.closeOnce.Do(func() {
+		// Close dispatcher channels — workers will drain remaining events then exit
+		// via the channel-closed (!ok) path.
+		w.dispatcher.Close()
+		// Wait for all workers to finish draining and flushing.
+		w.wg.Wait()
+		// Cancel the context last (for any callers holding it).
+		w.cancel()
+	})
 	return nil
 }
 
@@ -164,6 +173,7 @@ type SinkWorker struct {
 	// Stats — accessed only from the Run goroutine except via atomic load in Stats().
 	eventsWritten  int64
 	batchesFlushed int64
+	batchesFailed  int64
 }
 
 // Run runs the worker until its input channel is closed or ctx is cancelled.
@@ -205,7 +215,7 @@ func (w *SinkWorker) Run(ctx context.Context, wg *sync.WaitGroup) {
 }
 
 // flush writes all buffered events to the sink with retries.
-// Uses context.Background() so retries are not interrupted by a cancelled ctx.
+// Uses exponential backoff with jitter per error-handling-design.md.
 func (w *SinkWorker) flush(ctx context.Context) error {
 	if len(w.buffer) == 0 {
 		return nil
@@ -214,10 +224,37 @@ func (w *SinkWorker) flush(ctx context.Context) error {
 	batch := w.buffer
 	w.buffer = make([]*event.ChangeEvent, 0, w.batchSize)
 
+	// Initialize backoff state
+	delay := w.retryBackoff
+	const multiplier = 2.0
+	const maxDelay = 30 * time.Second
+
 	var lastErr error
 	for attempt := 0; attempt <= w.maxRetry; attempt++ {
 		if attempt > 0 {
-			time.Sleep(w.retryBackoff)
+			// Calculate delay with jitter (0-50% random jitter per error-handling-design.md:318-320)
+			jitter := time.Duration(rand.Float64() * 0.5 * float64(delay))
+			waitTime := delay + jitter
+
+			logutil.L().Warn("retry attempt failed, waiting before retry",
+				zap.Int("worker_id", w.id),
+				zap.Int("attempt", attempt),
+				zap.Duration("wait", waitTime),
+				zap.Int("batch_size", len(batch)),
+				zap.Error(lastErr),
+			)
+
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(waitTime):
+			}
+
+			// Exponential backoff (multiplier 2.0 per error-handling-design.md:252)
+			delay = time.Duration(float64(delay) * multiplier)
+			if delay > maxDelay {
+				delay = maxDelay
+			}
 		}
 
 		if err := w.sink.WriteBatch(ctx, batch); err != nil {
@@ -225,11 +262,20 @@ func (w *SinkWorker) flush(ctx context.Context) error {
 			continue
 		}
 
-		// Success — update stats atomically so Stats() can read safely.
+		// Success — update stats atomically and reset backoff
 		atomic.AddInt64(&w.eventsWritten, int64(len(batch)))
 		atomic.AddInt64(&w.batchesFlushed, 1)
 		return nil
 	}
+
+	// All retries exhausted — record failure
+	atomic.AddInt64(&w.batchesFailed, 1)
+	logutil.L().Error("batch write failed after all retries",
+		zap.Int("worker_id", w.id),
+		zap.Int("batch_size", len(batch)),
+		zap.Int("attempts", w.maxRetry+1),
+		zap.Error(lastErr),
+	)
 
 	return lastErr
 }
