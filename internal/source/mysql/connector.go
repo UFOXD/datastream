@@ -175,7 +175,7 @@ func (c *Connector) Start(ctx context.Context) error {
 	log.Info("starting MySQL connector")
 
 	// Create binlog syncer (replaces canal.Canal)
-	c.syncer = NewBinlogSyncer(c.config, c.schemaCache, c.events, c.errors)
+	c.syncer = NewBinlogSyncer(c.config, c.syncScope, c.schemaCache, c.events, c.errors)
 
 	// Start the syncer
 	if err := c.syncer.Start(ctx, c.position); err != nil {
@@ -337,7 +337,19 @@ func (c *Connector) ListTables() []string {
 }
 
 // shouldCapture checks if a table should be captured.
+// It prefers SyncScope when set, falling back to legacy config.Databases/Tables.
 func (c *Connector) shouldCapture(database, table string) bool {
+	// Use SyncScope when available
+	if c.syncScope != nil {
+		switch c.syncScope.Level {
+		case source.SyncLevelDatabase:
+			return c.syncScope.Databases.ShouldSyncTable(database, table)
+		case source.SyncLevelTable:
+			return c.syncScope.Tables.ShouldSyncTable(database, table)
+		}
+	}
+
+	// Fallback: legacy config.Databases / config.Tables
 	if len(c.config.Databases) == 0 {
 		return true
 	}

@@ -263,6 +263,109 @@ func TestShouldCaptureEmptyDatabases(t *testing.T) {
 	}
 }
 
+func TestShouldCaptureWithSyncScopeDatabaseLevel(t *testing.T) {
+	conn := New()
+	conn.config = &Config{} // no legacy databases set
+	conn.syncScope = &source.SyncScope{
+		Level: source.SyncLevelDatabase,
+		Databases: source.DatabaseScope{
+			Names: []string{"prod_db"},
+		},
+	}
+
+	tests := []struct {
+		database string
+		table    string
+		expected bool
+	}{
+		{"prod_db", "users", true},
+		{"prod_db", "orders", true},
+		{"staging_db", "users", false},
+		{"other_db", "anything", false},
+	}
+
+	for _, tt := range tests {
+		result := conn.shouldCapture(tt.database, tt.table)
+		if result != tt.expected {
+			t.Errorf("shouldCapture(%s, %s) = %v, want %v",
+				tt.database, tt.table, result, tt.expected)
+		}
+	}
+}
+
+func TestShouldCaptureWithSyncScopeTableLevel(t *testing.T) {
+	conn := New()
+	conn.config = &Config{} // no legacy databases set
+	conn.syncScope = &source.SyncScope{
+		Level: source.SyncLevelTable,
+		Tables: source.TableScope{
+			Names: []string{"db1.users", "db1.orders", "db2.products"},
+		},
+	}
+
+	tests := []struct {
+		database string
+		table    string
+		expected bool
+	}{
+		{"db1", "users", true},
+		{"db1", "orders", true},
+		{"db2", "products", true},
+		{"db1", "payments", false},
+		{"db2", "users", false},
+		{"db3", "anything", false},
+	}
+
+	for _, tt := range tests {
+		result := conn.shouldCapture(tt.database, tt.table)
+		if result != tt.expected {
+			t.Errorf("shouldCapture(%s, %s) = %v, want %v",
+				tt.database, tt.table, result, tt.expected)
+		}
+	}
+}
+
+func TestShouldCaptureWithSyncScopeWildcard(t *testing.T) {
+	conn := New()
+	conn.config = &Config{}
+	conn.syncScope = &source.SyncScope{
+		Level: source.SyncLevelDatabase,
+		Databases: source.DatabaseScope{
+			Names: []string{"*"}, // wildcard: all databases
+		},
+	}
+
+	// Wildcard should capture everything
+	if !conn.shouldCapture("any_db", "any_table") {
+		t.Error("expected shouldCapture to return true with wildcard database scope")
+	}
+	if !conn.shouldCapture("prod", "users") {
+		t.Error("expected shouldCapture to return true for prod.users with wildcard scope")
+	}
+}
+
+func TestShouldCaptureSyncScopeTakesPriorityOverLegacy(t *testing.T) {
+	conn := New()
+	// Legacy config allows "legacy_db", SyncScope allows "scope_db"
+	conn.config = &Config{
+		Databases: []string{"legacy_db"},
+	}
+	conn.syncScope = &source.SyncScope{
+		Level: source.SyncLevelDatabase,
+		Databases: source.DatabaseScope{
+			Names: []string{"scope_db"},
+		},
+	}
+
+	// SyncScope takes priority: scope_db should be captured, legacy_db should not
+	if !conn.shouldCapture("scope_db", "users") {
+		t.Error("expected shouldCapture to return true for scope_db (SyncScope)")
+	}
+	if conn.shouldCapture("legacy_db", "users") {
+		t.Error("expected shouldCapture to return false for legacy_db when SyncScope is set")
+	}
+}
+
 func TestMatchPattern(t *testing.T) {
 	tests := []struct {
 		pattern string
