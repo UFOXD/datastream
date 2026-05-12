@@ -26,4 +26,19 @@ var (
 
 	// ErrSchemaNotFound is returned when a table schema is not found.
 	ErrSchemaNotFound = errors.Normalize("schema not found", errors.RFCCodeText("DS:Source:SchemaNotFound"))
+
+	// ErrInvalidSyncScope is returned when sync scope configuration is invalid.
+	ErrInvalidSyncScope = errors.Normalize("invalid sync scope configuration", errors.RFCCodeText("DS:Source:InvalidSyncScope"))
+
+	// ErrDatabaseNotFound is returned when a database is not found.
+	ErrDatabaseNotFound = errors.Normalize("database not found", errors.RFCCodeText("DS:Source:DatabaseNotFound"))
+
+	// ErrTableNotFound is returned when a table is not found.
+	ErrTableNotFound = errors.Normalize("table not found", errors.RFCCodeText("DS:Source:TableNotFound"))
+
+	// ErrTableAlreadyExists is returned when adding an existing table.
+	ErrTableAlreadyExists = errors.Normalize("table already exists in sync scope", errors.RFCCodeText("DS:Source:TableAlreadyExists"))
+
+	// ErrDiscoveryNotSupported is returned when discovery is not supported.
+	ErrDiscoveryNotSupported = errors.Normalize("auto-discovery not supported for this connector", errors.RFCCodeText("DS:Source:DiscoveryNotSupported"))
 )
