@@ -10,14 +10,12 @@ import (
 	"github.com/UFOXD/datastream/pkg/event"
 	"github.com/UFOXD/datastream/internal/offset"
 	"github.com/UFOXD/datastream/internal/source"
-	"github.com/go-mysql-org/go-mysql/canal"
-	"github.com/go-mysql-org/go-mysql/mysql"
-	"github.com/go-mysql-org/go-mysql/schema"
 	"github.com/pingcap/log"
 	"go.uber.org/zap"
 )
 
 // Connector implements the source.Connector interface for MySQL.
+// Uses replication.BinlogSyncer directly instead of canal.Canal.
 type Connector struct {
 	config      *Config
 	status      source.Status
@@ -27,10 +25,12 @@ type Connector struct {
 	stopCh      chan struct{}
 	wg          sync.WaitGroup
 	mu          sync.RWMutex
-	schemaCache map[string]*event.TableInfo
 
-	// Canal for binlog replication
-	canal *canal.Canal
+	// Binlog syncer (replaces canal.Canal)
+	syncer *BinlogSyncer
+
+	// Schema cache for independent schema management
+	schemaCache *TableSchemaCache
 
 	// Database connection for schema queries
 	db *sql.DB
@@ -41,6 +41,9 @@ type Connector struct {
 	// Offset storage
 	offsetStorage offset.Storage
 	taskID        string
+
+	// Sync scope
+	syncScope *source.SyncScope
 }
 
 // New creates a new MySQL source connector.
@@ -50,10 +53,9 @@ func New() *Connector {
 			State:     source.StateUninitialized,
 			Timestamp: time.Now().Format(time.RFC3339),
 		},
-		events:      make(chan *event.ChangeEvent, 1000),
-		errors:      make(chan error, 100),
-		stopCh:      make(chan struct{}),
-		schemaCache: make(map[string]*event.TableInfo),
+		events:    make(chan *event.ChangeEvent, 1000),
+		errors:    make(chan error, 100),
+		stopCh:    make(chan struct{}),
 	}
 }
 
@@ -78,6 +80,7 @@ func (c *Connector) Initialize(ctx context.Context, config source.Config) error 
 	}
 
 	c.config = cfg
+	c.syncScope = config.SyncScope
 	c.status.State = source.StateInitializing
 	c.status.Timestamp = time.Now().Format(time.RFC3339)
 
@@ -109,6 +112,9 @@ func (c *Connector) Initialize(ctx context.Context, config source.Config) error 
 	}
 
 	c.db = db
+
+	// Initialize schema cache with database connection
+	c.schemaCache = NewTableSchemaCache(db)
 
 	// Initialize offset storage
 	if config.Offset.Backend != "" {
@@ -168,48 +174,23 @@ func (c *Connector) Start(ctx context.Context) error {
 
 	log.Info("starting MySQL connector")
 
-	// Create canal config
-	canalCfg := canal.NewDefaultConfig()
-	canalCfg.Addr = fmt.Sprintf("%s:%d", c.config.Host, c.config.Port)
-	canalCfg.User = c.config.User
-	canalCfg.Password = c.config.Password
-	canalCfg.ServerID = c.config.ServerID
-	canalCfg.Flavor = "mysql"
+	// Create binlog syncer (replaces canal.Canal)
+	c.syncer = NewBinlogSyncer(c.config, c.schemaCache, c.events, c.errors)
 
-	// Disable initial dump - we'll handle snapshot separately
-	canalCfg.Dump.ExecutionPath = ""
-
-	// Set databases/tables filter
-	if len(c.config.Databases) > 0 {
-		canalCfg.IncludeTableRegex = make([]string, 0, len(c.config.Databases))
-		for _, db := range c.config.Databases {
-			canalCfg.IncludeTableRegex = append(canalCfg.IncludeTableRegex,
-				fmt.Sprintf("^%s\\..*$", db))
-		}
-	}
-
-	// Create canal
-	canal, err := canal.NewCanal(canalCfg)
-	if err != nil {
+	// Start the syncer
+	if err := c.syncer.Start(ctx, c.position); err != nil {
 		c.mu.Lock()
 		c.status.State = source.StateError
 		c.status.Message = err.Error()
 		c.mu.Unlock()
-		return fmt.Errorf("failed to create canal: %w", err)
+		return fmt.Errorf("failed to start binlog syncer: %w", err)
 	}
 
-	c.mu.Lock()
-	c.canal = canal
-	c.mu.Unlock()
-
-	// Set event handler
-	handler := NewBinlogHandler(ctx, c)
-	canal.SetEventHandler(handler)
-
-	// Start binlog streaming in a goroutine
+	// Start position saver goroutine
 	c.wg.Add(1)
-	go c.run(ctx)
+	go c.runPositionSaver(ctx)
 
+	log.Info("MySQL connector started")
 	return nil
 }
 
@@ -226,13 +207,9 @@ func (c *Connector) Stop(ctx context.Context) error {
 	log.Info("stopping MySQL connector")
 	close(c.stopCh)
 
-	// Close canal
-	c.mu.RLock()
-	canal := c.canal
-	c.mu.RUnlock()
-
-	if canal != nil {
-		canal.Close()
+	// Stop the syncer
+	if c.syncer != nil {
+		c.syncer.Stop()
 	}
 
 	c.wg.Wait()
@@ -247,6 +224,11 @@ func (c *Connector) Stop(ctx context.Context) error {
 	// Close offset storage
 	if c.offsetStorage != nil {
 		c.offsetStorage.Close()
+	}
+
+	// Close database connection
+	if c.db != nil {
+		c.db.Close()
 	}
 
 	log.Info("MySQL connector stopped")
@@ -298,16 +280,60 @@ func (c *Connector) SetPosition(pos *event.Position) error {
 
 // GetSchema returns the schema for a table.
 func (c *Connector) GetSchema(database, table string) (*event.TableInfo, error) {
-	c.mu.RLock()
-	key := database + "." + table
-	if schema, ok := c.schemaCache[key]; ok {
-		c.mu.RUnlock()
-		return schema.Clone(), nil
-	}
-	c.mu.RUnlock()
+	return c.schemaCache.Get(context.Background(), database, table)
+}
 
-	// Query schema from MySQL
-	return c.querySchema(database, table)
+// SyncScope returns the current sync scope.
+func (c *Connector) SyncScope() *source.SyncScope {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.syncScope
+}
+
+// AddTables adds tables to sync (table-level only).
+func (c *Connector) AddTables(ctx context.Context, tables []string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.syncScope == nil || c.syncScope.Level != source.SyncLevelTable {
+		return source.ErrInvalidSyncScope
+	}
+	for _, t := range tables {
+		c.syncScope.Tables.Names = append(c.syncScope.Tables.Names, t)
+	}
+	return nil
+}
+
+// RemoveTables removes tables from sync (table-level only).
+func (c *Connector) RemoveTables(ctx context.Context, tables []string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.syncScope == nil || c.syncScope.Level != source.SyncLevelTable {
+		return source.ErrInvalidSyncScope
+	}
+	remove := make(map[string]struct{}, len(tables))
+	for _, t := range tables {
+		remove[t] = struct{}{}
+	}
+	names := c.syncScope.Tables.Names[:0]
+	for _, n := range c.syncScope.Tables.Names {
+		if _, ok := remove[n]; !ok {
+			names = append(names, n)
+		}
+	}
+	c.syncScope.Tables.Names = names
+	return nil
+}
+
+// ListTables returns all tables being synced.
+func (c *Connector) ListTables() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.syncScope == nil || c.syncScope.Level != source.SyncLevelTable {
+		return nil
+	}
+	result := make([]string, len(c.syncScope.Tables.Names))
+	copy(result, c.syncScope.Tables.Names)
+	return result
 }
 
 // shouldCapture checks if a table should be captured.
@@ -338,179 +364,33 @@ func (c *Connector) shouldCapture(database, table string) bool {
 	return false
 }
 
-// matchPattern performs simple pattern matching.
-func matchPattern(pattern, s string) bool {
-	if pattern == "*" {
-		return true
-	}
-	// TODO: Implement proper pattern matching with wildcards
-	return pattern == s
-}
-
-// getTableInfo gets or builds table info from canal table.
-func (c *Connector) getTableInfo(table *schema.Table) *event.TableInfo {
-	key := table.Schema + "." + table.Name
-
-	c.mu.RLock()
-	if info, ok := c.schemaCache[key]; ok {
-		c.mu.RUnlock()
-		return info
-	}
-	c.mu.RUnlock()
-
-	// Build table info
-	info := &event.TableInfo{
-		Database: table.Schema,
-		Table:    table.Name,
-	}
-
-	// Build column info
-	columns := make([]event.ColumnInfo, 0, len(table.Columns))
-	keyColumns := make([]string, 0)
-
-	for i, col := range table.Columns {
-		columns = append(columns, event.ColumnInfo{
-			Name:     col.Name,
-			Type:     col.RawType,
-			Nullable: true, // Default to nullable
-		})
-
-		// Check if this is a primary key column
-		if table.IsPrimaryKey(i) {
-			keyColumns = append(keyColumns, col.Name)
-		}
-	}
-
-	info.Columns = columns
-	info.PrimaryKeyColumns = keyColumns
-
-	// Cache it
-	c.mu.Lock()
-	c.schemaCache[key] = info
-	c.mu.Unlock()
-
-	return info
-}
-
-// currentBinlogFile returns the current binlog file name.
-func (c *Connector) currentBinlogFile() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.currentBinlog
-}
-
-// run is the main event loop.
-func (c *Connector) run(ctx context.Context) {
+// runPositionSaver periodically saves position to offset storage.
+func (c *Connector) runPositionSaver(ctx context.Context) {
 	defer c.wg.Done()
 
-	// Get canal and starting position
-	c.mu.RLock()
-	canal := c.canal
-	pos := c.position
-	c.mu.RUnlock()
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
 
-	if canal == nil {
-		log.Error("canal not initialized")
-		c.sendError(fmt.Errorf("canal not initialized"))
-		return
-	}
-
-	// Run canal
-	errCh := make(chan error, 1)
-	go func() {
-		var err error
-		if pos != nil && pos.BinlogFile != "" {
-			err = canal.RunFrom(mysql.Position{
-				Name: pos.BinlogFile,
-				Pos:  pos.BinlogPos,
-			})
-		} else {
-			err = canal.Run()
-		}
-		errCh <- err
-	}()
-
-	// Wait for stop signal or error
-	select {
-	case <-ctx.Done():
-		log.Info("MySQL connector context done")
-		canal.Close()
-	case <-c.stopCh:
-		log.Info("MySQL connector stop signal received")
-		canal.Close()
-	case err := <-errCh:
-		if err != nil {
-			log.Error("canal error", zap.Error(err))
-			c.sendError(err)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-c.stopCh:
+			return
+		case <-ticker.C:
+			if c.offsetStorage != nil && c.syncer != nil {
+				pos := c.syncer.GetPosition()
+				if pos != nil {
+					c.mu.Lock()
+					c.position = pos
+					c.mu.Unlock()
+					if err := c.offsetStorage.Save(ctx, c.taskID, pos); err != nil {
+						log.Warn("failed to save position to offset storage", zap.Error(err))
+					}
+				}
+			}
 		}
 	}
-}
-
-// sendError sends an error to the errors channel.
-func (c *Connector) sendError(err error) {
-	select {
-	case c.errors <- err:
-	case <-time.After(time.Second * 5):
-		log.Warn("failed to send error, channel full", zap.Error(err))
-	}
-}
-
-// querySchema queries the table schema from MySQL.
-func (c *Connector) querySchema(database, table string) (*event.TableInfo, error) {
-	c.mu.RLock()
-	db := c.db
-	c.mu.RUnlock()
-
-	if db == nil {
-		return nil, source.ErrNotInitialized
-	}
-
-	info := &event.TableInfo{
-		Database: database,
-		Table:    table,
-	}
-
-	// Query columns
-	rows, err := db.Query(`
-		SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY
-		FROM INFORMATION_SCHEMA.COLUMNS
-		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
-		ORDER BY ORDINAL_POSITION
-	`, database, table)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query columns: %w", err)
-	}
-	defer rows.Close()
-
-	columns := make([]event.ColumnInfo, 0)
-	keyColumns := make([]string, 0)
-
-	for rows.Next() {
-		var colName, dataType, isNullable, columnKey string
-		if err := rows.Scan(&colName, &dataType, &isNullable, &columnKey); err != nil {
-			return nil, fmt.Errorf("failed to scan column: %w", err)
-		}
-
-		columns = append(columns, event.ColumnInfo{
-			Name:     colName,
-			Type:     dataType,
-			Nullable: isNullable == "YES",
-		})
-
-		if columnKey == "PRI" {
-			keyColumns = append(keyColumns, colName)
-		}
-	}
-
-	info.Columns = columns
-	info.PrimaryKeyColumns = keyColumns
-
-	// Cache it
-	c.mu.Lock()
-	c.schemaCache[database+"."+table] = info
-	c.mu.Unlock()
-
-	return info, nil
 }
 
 func parseConfig(config source.Config) (*Config, error) {

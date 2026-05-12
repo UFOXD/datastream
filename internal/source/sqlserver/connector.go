@@ -40,6 +40,9 @@ type Connector struct {
 	// Offset storage
 	offsetStorage offset.Storage
 	taskID        string
+
+	// Sync scope
+	syncScope *source.SyncScope
 }
 
 // New creates a new SQL Server source connector.
@@ -76,6 +79,7 @@ func (c *Connector) Initialize(ctx context.Context, config source.Config) error 
 	}
 
 	c.config = cfg
+	c.syncScope = config.SyncScope
 	c.status.State = source.StateInitializing
 	c.status.Timestamp = time.Now().Format(time.RFC3339)
 
@@ -290,6 +294,59 @@ func (c *Connector) SetPosition(pos *event.Position) error {
 // GetSchema returns the schema for a table.
 func (c *Connector) GetSchema(database, table string) (*event.TableInfo, error) {
 	return c.schemaCache.Get(context.Background(), database, table)
+}
+
+// SyncScope returns the current sync scope.
+func (c *Connector) SyncScope() *source.SyncScope {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.syncScope
+}
+
+// AddTables adds tables to sync (table-level only).
+func (c *Connector) AddTables(ctx context.Context, tables []string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.syncScope == nil || c.syncScope.Level != source.SyncLevelTable {
+		return source.ErrInvalidSyncScope
+	}
+	for _, t := range tables {
+		c.syncScope.Tables.Names = append(c.syncScope.Tables.Names, t)
+	}
+	return nil
+}
+
+// RemoveTables removes tables from sync (table-level only).
+func (c *Connector) RemoveTables(ctx context.Context, tables []string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.syncScope == nil || c.syncScope.Level != source.SyncLevelTable {
+		return source.ErrInvalidSyncScope
+	}
+	remove := make(map[string]struct{}, len(tables))
+	for _, t := range tables {
+		remove[t] = struct{}{}
+	}
+	names := c.syncScope.Tables.Names[:0]
+	for _, n := range c.syncScope.Tables.Names {
+		if _, ok := remove[n]; !ok {
+			names = append(names, n)
+		}
+	}
+	c.syncScope.Tables.Names = names
+	return nil
+}
+
+// ListTables returns all tables being synced.
+func (c *Connector) ListTables() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.syncScope == nil || c.syncScope.Level != source.SyncLevelTable {
+		return nil
+	}
+	result := make([]string, len(c.syncScope.Tables.Names))
+	copy(result, c.syncScope.Tables.Names)
+	return result
 }
 
 // runPollingLoop polls each CDCReader on every PollInterval tick.

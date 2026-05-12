@@ -38,6 +38,18 @@ type Connector interface {
 
 	// GetSchema returns the schema for a table.
 	GetSchema(database, table string) (*event.TableInfo, error)
+
+	// SyncScope returns the current sync scope.
+	SyncScope() *SyncScope
+
+	// AddTables adds tables to sync (table-level only).
+	AddTables(ctx context.Context, tables []string) error
+
+	// RemoveTables removes tables from sync (table-level only).
+	RemoveTables(ctx context.Context, tables []string) error
+
+	// ListTables returns all tables being synced.
+	ListTables() []string
 }
 
 // Config is the configuration for a source connector.
@@ -59,6 +71,9 @@ type Config struct {
 
 	// Offset storage configuration
 	Offset OffsetConfig `json:"offset"`
+
+	// SyncScope defines what databases/tables to sync
+	SyncScope *SyncScope `json:"syncScope" toml:"sync-scope"`
 }
 
 // ConnectionConfig holds database connection configuration.
