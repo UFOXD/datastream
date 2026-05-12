@@ -2,6 +2,8 @@ package source
 
 import (
 	"testing"
+
+	"github.com/UFOXD/datastream/pkg/parser"
 )
 
 func TestDatabaseDiscovery_HandleCreateDB(t *testing.T) {
@@ -14,11 +16,11 @@ func TestDatabaseDiscovery_HandleCreateDB(t *testing.T) {
 	})
 
 	d.HandleDDL(&DDLEvent{
-		Type:     DDLTypeCreateDB,
+		Type:     parser.DDLTypeCreateDatabase,
 		Database: "newdb",
 	})
 
-	// Should emit a database_created event
+	// Should emit a database-created event
 	if len(ch) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(ch))
 	}
@@ -29,6 +31,9 @@ func TestDatabaseDiscovery_HandleCreateDB(t *testing.T) {
 	if ev.Database != "newdb" {
 		t.Errorf("expected database 'newdb', got %q", ev.Database)
 	}
+	if ev.Timestamp.IsZero() {
+		t.Error("expected Timestamp to be set, got zero value")
+	}
 
 	// Database should now be known
 	if !d.IsDatabaseKnown("newdb") {
@@ -37,7 +42,7 @@ func TestDatabaseDiscovery_HandleCreateDB(t *testing.T) {
 
 	// Duplicate CREATE DATABASE should not emit another event
 	d.HandleDDL(&DDLEvent{
-		Type:     DDLTypeCreateDB,
+		Type:     parser.DDLTypeCreateDatabase,
 		Database: "newdb",
 	})
 	if len(ch) != 0 {
@@ -55,12 +60,12 @@ func TestDatabaseDiscovery_HandleCreateTable(t *testing.T) {
 	})
 
 	d.HandleDDL(&DDLEvent{
-		Type:     DDLTypeCreateTable,
+		Type:     parser.DDLTypeCreateTable,
 		Database: "mydb",
 		Table:    "users",
 	})
 
-	// Should emit a table_created event
+	// Should emit a table-created event
 	if len(ch) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(ch))
 	}
@@ -73,6 +78,9 @@ func TestDatabaseDiscovery_HandleCreateTable(t *testing.T) {
 	}
 	if ev.Table != "users" {
 		t.Errorf("expected table 'users', got %q", ev.Table)
+	}
+	if ev.Timestamp.IsZero() {
+		t.Error("expected Timestamp to be set, got zero value")
 	}
 
 	// Table should now be known
@@ -98,12 +106,12 @@ func TestDatabaseDiscovery_HandleDropTable(t *testing.T) {
 	}
 
 	d.HandleDDL(&DDLEvent{
-		Type:     DDLTypeDropTable,
+		Type:     parser.DDLTypeDropTable,
 		Database: "mydb",
 		Table:    "orders",
 	})
 
-	// Should emit a table_dropped event
+	// Should emit a table-dropped event
 	if len(ch) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(ch))
 	}
@@ -117,10 +125,49 @@ func TestDatabaseDiscovery_HandleDropTable(t *testing.T) {
 	if ev.Table != "orders" {
 		t.Errorf("expected table 'orders', got %q", ev.Table)
 	}
+	if ev.Timestamp.IsZero() {
+		t.Error("expected Timestamp to be set, got zero value")
+	}
 
 	// Table should no longer be known
 	if d.IsTableKnown("mydb", "orders") {
 		t.Error("expected 'mydb.orders' to be unknown after DROP TABLE")
+	}
+}
+
+func TestDatabaseDiscovery_HandleAlterTable(t *testing.T) {
+	ch := make(chan *DiscoveryEvent, 10)
+	d := NewDatabaseDiscovery(&DiscoveryConfig{
+		Scope:        &DatabaseScope{Names: []string{"*"}},
+		EventChannel: ch,
+		InitialDBs:   map[string]struct{}{},
+		InitialTables: map[string]struct{}{
+			"mydb.users": {},
+		},
+	})
+
+	d.HandleDDL(&DDLEvent{
+		Type:     parser.DDLTypeAlterTable,
+		Database: "mydb",
+		Table:    "users",
+	})
+
+	// Should emit a table-altered event
+	if len(ch) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(ch))
+	}
+	ev := <-ch
+	if ev.Type != DiscoveryTypeTableAltered {
+		t.Errorf("expected event type %s, got %s", DiscoveryTypeTableAltered, ev.Type)
+	}
+	if ev.Database != "mydb" {
+		t.Errorf("expected database 'mydb', got %q", ev.Database)
+	}
+	if ev.Table != "users" {
+		t.Errorf("expected table 'users', got %q", ev.Table)
+	}
+	if ev.Timestamp.IsZero() {
+		t.Error("expected Timestamp to be set, got zero value")
 	}
 }
 
@@ -136,13 +183,13 @@ func TestDatabaseDiscovery_IgnoreOutOfScopeDDL(t *testing.T) {
 
 	// CREATE DATABASE on non-wildcard scope should be ignored
 	d.HandleDDL(&DDLEvent{
-		Type:     DDLTypeCreateDB,
+		Type:     parser.DDLTypeCreateDatabase,
 		Database: "otherdb",
 	})
 
 	// CREATE TABLE for out-of-scope database should be ignored
 	d.HandleDDL(&DDLEvent{
-		Type:     DDLTypeCreateTable,
+		Type:     parser.DDLTypeCreateTable,
 		Database: "otherdb",
 		Table:    "users",
 	})

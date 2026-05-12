@@ -1,41 +1,38 @@
 // Package source defines the source connector interfaces for DataStream.
 package source
 
-import "sync"
+import (
+	"sync"
+	"time"
 
-// DDLType represents DDL event types.
-type DDLType string
-
-const (
-	DDLTypeCreateDB    DDLType = "CREATE_DATABASE"
-	DDLTypeDropDB      DDLType = "DROP_DATABASE"
-	DDLTypeCreateTable DDLType = "CREATE_TABLE"
-	DDLTypeDropTable   DDLType = "DROP_TABLE"
-	DDLTypeAlterTable  DDLType = "ALTER_TABLE"
+	"github.com/UFOXD/datastream/pkg/parser"
 )
 
-// DDLEvent represents a DDL event.
+// DDLEvent represents a DDL event from a source connector.
 type DDLEvent struct {
 	Database string
 	Table    string
-	Type     DDLType
+	Type     parser.DDLType
 }
 
 // DiscoveryType represents discovery event types.
 type DiscoveryType string
 
 const (
-	DiscoveryTypeDatabaseCreated DiscoveryType = "database_created"
-	DiscoveryTypeDatabaseDropped DiscoveryType = "database_dropped"
-	DiscoveryTypeTableCreated    DiscoveryType = "table_created"
-	DiscoveryTypeTableDropped    DiscoveryType = "table_dropped"
+	DiscoveryTypeDatabaseCreated DiscoveryType = "database-created"
+	DiscoveryTypeDatabaseDropped DiscoveryType = "database-dropped"
+	DiscoveryTypeTableCreated    DiscoveryType = "table-created"
+	DiscoveryTypeTableDropped    DiscoveryType = "table-dropped"
+	DiscoveryTypeTableAltered    DiscoveryType = "table-altered"
 )
 
 // DiscoveryEvent represents a discovery event.
 type DiscoveryEvent struct {
-	Type     DiscoveryType
-	Database string
-	Table    string
+	Type      DiscoveryType
+	Database  string
+	Table     string
+	Timestamp time.Time
+	Schema    *parser.TableInfo
 }
 
 // DiscoveryConfig holds configuration for DatabaseDiscovery.
@@ -94,7 +91,7 @@ func (d *DatabaseDiscovery) handleDDL(event *DDLEvent) {
 	scope := d.config.Scope
 
 	switch event.Type {
-	case DDLTypeCreateDB:
+	case parser.DDLTypeCreateDatabase:
 		// Only handle in wildcard mode
 		if !scope.IsWildcardDatabase() {
 			return
@@ -107,7 +104,7 @@ func (d *DatabaseDiscovery) handleDDL(event *DDLEvent) {
 			})
 		}
 
-	case DDLTypeDropDB:
+	case parser.DDLTypeDropDatabase:
 		if _, known := d.knownDBs[event.Database]; known {
 			delete(d.knownDBs, event.Database)
 			d.emit(&DiscoveryEvent{
@@ -116,7 +113,7 @@ func (d *DatabaseDiscovery) handleDDL(event *DDLEvent) {
 			})
 		}
 
-	case DDLTypeCreateTable:
+	case parser.DDLTypeCreateTable:
 		// Check if database is in scope
 		if !scope.ShouldSyncDatabase(event.Database) {
 			return
@@ -131,7 +128,7 @@ func (d *DatabaseDiscovery) handleDDL(event *DDLEvent) {
 			})
 		}
 
-	case DDLTypeDropTable:
+	case parser.DDLTypeDropTable:
 		// Check if database is in scope
 		if !scope.ShouldSyncDatabase(event.Database) {
 			return
@@ -145,6 +142,17 @@ func (d *DatabaseDiscovery) handleDDL(event *DDLEvent) {
 				Table:    event.Table,
 			})
 		}
+
+	case parser.DDLTypeAlterTable:
+		// Check if database is in scope
+		if !scope.ShouldSyncDatabase(event.Database) {
+			return
+		}
+		d.emit(&DiscoveryEvent{
+			Type:     DiscoveryTypeTableAltered,
+			Database: event.Database,
+			Table:    event.Table,
+		})
 	}
 }
 
@@ -153,6 +161,7 @@ func (d *DatabaseDiscovery) emit(event *DiscoveryEvent) {
 	if d.config.EventChannel == nil {
 		return
 	}
+	event.Timestamp = time.Now()
 	select {
 	case d.config.EventChannel <- event:
 	default:
