@@ -293,12 +293,20 @@ func (c *Connector) SyncScope() *source.SyncScope {
 // AddTables adds tables to sync (table-level only).
 func (c *Connector) AddTables(ctx context.Context, tables []string) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.syncScope == nil || c.syncScope.Level != source.SyncLevelTable {
+		c.mu.Unlock()
 		return source.ErrInvalidSyncScope
 	}
 	for _, t := range tables {
 		c.syncScope.Tables.Names = append(c.syncScope.Tables.Names, t)
+	}
+	// Capture updated scope while still holding the lock, then propagate.
+	updated := c.syncScope
+	syncer := c.syncer
+	c.mu.Unlock()
+
+	if syncer != nil {
+		syncer.UpdateSyncScope(updated)
 	}
 	return nil
 }
@@ -306,8 +314,8 @@ func (c *Connector) AddTables(ctx context.Context, tables []string) error {
 // RemoveTables removes tables from sync (table-level only).
 func (c *Connector) RemoveTables(ctx context.Context, tables []string) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.syncScope == nil || c.syncScope.Level != source.SyncLevelTable {
+		c.mu.Unlock()
 		return source.ErrInvalidSyncScope
 	}
 	remove := make(map[string]struct{}, len(tables))
@@ -321,6 +329,14 @@ func (c *Connector) RemoveTables(ctx context.Context, tables []string) error {
 		}
 	}
 	c.syncScope.Tables.Names = names
+	// Capture updated scope while still holding the lock, then propagate.
+	updated := c.syncScope
+	syncer := c.syncer
+	c.mu.Unlock()
+
+	if syncer != nil {
+		syncer.UpdateSyncScope(updated)
+	}
 	return nil
 }
 

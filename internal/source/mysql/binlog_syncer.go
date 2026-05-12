@@ -21,11 +21,16 @@ import (
 // This replaces the canal.Canal usage with direct replication package usage.
 type BinlogSyncer struct {
 	config      *Config
-	syncScope   *source.SyncScope
 	syncer      *replication.BinlogSyncer
 	streamer    *replication.BinlogStreamer
 	parser      parser.DDLParser
 	schemaCache *TableSchemaCache
+
+	// syncScope is the syncer's own deep copy of the scope.
+	// Protected by syncScopeMu so the binlog goroutine and Connector
+	// mutations (AddTables/RemoveTables) never race.
+	syncScope   *source.SyncScope
+	syncScopeMu sync.RWMutex
 
 	// Event channels
 	events chan *event.ChangeEvent
@@ -48,16 +53,27 @@ type BinlogSyncer struct {
 }
 
 // NewBinlogSyncer creates a new binlog syncer.
+// It stores a deep copy of syncScope so that mutations on the Connector's
+// copy (e.g. AddTables/RemoveTables) do not race with the binlog goroutine.
 func NewBinlogSyncer(config *Config, syncScope *source.SyncScope, schemaCache *TableSchemaCache, events chan *event.ChangeEvent, errors chan error) *BinlogSyncer {
 	return &BinlogSyncer{
 		config:           config,
-		syncScope:        syncScope,
+		syncScope:        syncScope.Clone(),
 		schemaCache:      schemaCache,
 		events:           events,
 		errors:           errors,
 		tableColumnTypes: make(map[uint64][]byte),
 		tableColumnMetas: make(map[uint64][]uint16),
 	}
+}
+
+// UpdateSyncScope replaces the syncer's internal scope with a deep copy of
+// the provided scope. Safe to call from any goroutine while the binlog
+// goroutine is running.
+func (s *BinlogSyncer) UpdateSyncScope(newScope *source.SyncScope) {
+	s.syncScopeMu.Lock()
+	s.syncScope = newScope.Clone()
+	s.syncScopeMu.Unlock()
 }
 
 // Start starts the binlog syncer.
@@ -417,13 +433,18 @@ func (s *BinlogSyncer) handleGTIDEvent(ev *replication.BinlogEvent) error {
 // shouldCapture checks if a table should be captured.
 // It prefers SyncScope when set, falling back to legacy config.Databases/Tables.
 func (s *BinlogSyncer) shouldCapture(database, table string) bool {
-	// Use SyncScope when available
-	if s.syncScope != nil {
-		switch s.syncScope.Level {
+	// Use SyncScope when available. Take a read lock so this is safe
+	// to call concurrently with UpdateSyncScope.
+	s.syncScopeMu.RLock()
+	scope := s.syncScope
+	s.syncScopeMu.RUnlock()
+
+	if scope != nil {
+		switch scope.Level {
 		case source.SyncLevelDatabase:
-			return s.syncScope.Databases.ShouldSyncTable(database, table)
+			return scope.Databases.ShouldSyncTable(database, table)
 		case source.SyncLevelTable:
-			return s.syncScope.Tables.ShouldSyncTable(database, table)
+			return scope.Tables.ShouldSyncTable(database, table)
 		}
 	}
 
