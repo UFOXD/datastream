@@ -50,17 +50,18 @@ type DiscoveryConfig struct {
 	InitialTables map[string]struct{}
 }
 
-// DatabaseDiscovery handles auto-discovery of databases and tables in wildcard mode.
-type DatabaseDiscovery struct {
+// DDLDiscovery handles auto-discovery of databases and tables in wildcard mode
+// by processing raw DDL events (no connector dependency).
+type DDLDiscovery struct {
 	config      *DiscoveryConfig
 	knownDBs    map[string]struct{}
 	knownTables map[string]struct{}
 	mu          sync.RWMutex
 }
 
-// NewDatabaseDiscovery creates a new DatabaseDiscovery with the given configuration.
-func NewDatabaseDiscovery(cfg *DiscoveryConfig) *DatabaseDiscovery {
-	d := &DatabaseDiscovery{
+// NewDDLDiscovery creates a new DDLDiscovery with the given configuration.
+func NewDDLDiscovery(cfg *DiscoveryConfig) *DDLDiscovery {
+	d := &DDLDiscovery{
 		config:      cfg,
 		knownDBs:    make(map[string]struct{}),
 		knownTables: make(map[string]struct{}),
@@ -80,14 +81,14 @@ func NewDatabaseDiscovery(cfg *DiscoveryConfig) *DatabaseDiscovery {
 }
 
 // HandleDDL processes a DDL event and emits discovery events as appropriate.
-func (d *DatabaseDiscovery) HandleDDL(event *DDLEvent) {
+func (d *DDLDiscovery) HandleDDL(event *DDLEvent) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.handleDDL(event)
 }
 
 // handleDDL is the internal (unlocked) handler for DDL events.
-func (d *DatabaseDiscovery) handleDDL(event *DDLEvent) {
+func (d *DDLDiscovery) handleDDL(event *DDLEvent) {
 	scope := d.config.Scope
 
 	switch event.Type {
@@ -157,7 +158,7 @@ func (d *DatabaseDiscovery) handleDDL(event *DDLEvent) {
 }
 
 // emit sends a discovery event on the event channel (non-blocking).
-func (d *DatabaseDiscovery) emit(event *DiscoveryEvent) {
+func (d *DDLDiscovery) emit(event *DiscoveryEvent) {
 	if d.config.EventChannel == nil {
 		return
 	}
@@ -169,7 +170,7 @@ func (d *DatabaseDiscovery) emit(event *DiscoveryEvent) {
 }
 
 // IsDatabaseKnown returns true if the database has been discovered.
-func (d *DatabaseDiscovery) IsDatabaseKnown(db string) bool {
+func (d *DDLDiscovery) IsDatabaseKnown(db string) bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	_, ok := d.knownDBs[db]
@@ -177,7 +178,7 @@ func (d *DatabaseDiscovery) IsDatabaseKnown(db string) bool {
 }
 
 // IsTableKnown returns true if the table (in the given database) has been discovered.
-func (d *DatabaseDiscovery) IsTableKnown(db, table string) bool {
+func (d *DDLDiscovery) IsTableKnown(db, table string) bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	_, ok := d.knownTables[db+"."+table]

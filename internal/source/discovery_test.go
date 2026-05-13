@@ -8,7 +8,7 @@ import (
 
 func TestDatabaseDiscovery_HandleCreateDB(t *testing.T) {
 	ch := make(chan *DiscoveryEvent, 10)
-	d := NewDatabaseDiscovery(&DiscoveryConfig{
+	d := NewDDLDiscovery(&DiscoveryConfig{
 		Scope:         &DatabaseScope{Names: []string{"*"}},
 		EventChannel:  ch,
 		InitialDBs:    map[string]struct{}{},
@@ -52,7 +52,7 @@ func TestDatabaseDiscovery_HandleCreateDB(t *testing.T) {
 
 func TestDatabaseDiscovery_HandleCreateTable(t *testing.T) {
 	ch := make(chan *DiscoveryEvent, 10)
-	d := NewDatabaseDiscovery(&DiscoveryConfig{
+	d := NewDDLDiscovery(&DiscoveryConfig{
 		Scope:         &DatabaseScope{Names: []string{"*"}},
 		EventChannel:  ch,
 		InitialDBs:    map[string]struct{}{},
@@ -91,7 +91,7 @@ func TestDatabaseDiscovery_HandleCreateTable(t *testing.T) {
 
 func TestDatabaseDiscovery_HandleDropTable(t *testing.T) {
 	ch := make(chan *DiscoveryEvent, 10)
-	d := NewDatabaseDiscovery(&DiscoveryConfig{
+	d := NewDDLDiscovery(&DiscoveryConfig{
 		Scope:        &DatabaseScope{Names: []string{"*"}},
 		EventChannel: ch,
 		InitialDBs:   map[string]struct{}{},
@@ -137,7 +137,7 @@ func TestDatabaseDiscovery_HandleDropTable(t *testing.T) {
 
 func TestDatabaseDiscovery_HandleAlterTable(t *testing.T) {
 	ch := make(chan *DiscoveryEvent, 10)
-	d := NewDatabaseDiscovery(&DiscoveryConfig{
+	d := NewDDLDiscovery(&DiscoveryConfig{
 		Scope:        &DatabaseScope{Names: []string{"*"}},
 		EventChannel: ch,
 		InitialDBs:   map[string]struct{}{},
@@ -174,7 +174,7 @@ func TestDatabaseDiscovery_HandleAlterTable(t *testing.T) {
 func TestDatabaseDiscovery_IgnoreOutOfScopeDDL(t *testing.T) {
 	ch := make(chan *DiscoveryEvent, 10)
 	// Scope is limited to "alloweddb" only (not wildcard)
-	d := NewDatabaseDiscovery(&DiscoveryConfig{
+	d := NewDDLDiscovery(&DiscoveryConfig{
 		Scope:         &DatabaseScope{Names: []string{"alloweddb"}},
 		EventChannel:  ch,
 		InitialDBs:    map[string]struct{}{},
