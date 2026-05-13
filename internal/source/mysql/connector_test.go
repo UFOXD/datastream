@@ -375,7 +375,9 @@ func TestMatchPattern(t *testing.T) {
 		{"*", "anything", true},
 		{"users", "users", true},
 		{"users", "orders", false},
-		{"user*", "users", false}, // Simple matching, no wildcards
+		{"user*", "users", true}, // Wildcard matching: user* matches users
+		{"user*", "user", true},  // * can match empty string
+		{"user*", "usr", false},  // Prefix must match
 	}
 
 	for _, tt := range tests {
@@ -427,5 +429,51 @@ func TestErrorsChannel(t *testing.T) {
 	errorsCh := conn.Errors()
 	if errorsCh == nil {
 		t.Error("expected non-nil errors channel")
+	}
+}
+
+func TestConnector_Schemas(t *testing.T) {
+	conn := New()
+
+	// Schemas() should work even without initialization (empty cache)
+	schemas := conn.Schemas()
+	if schemas == nil {
+		t.Fatal("expected non-nil schemas map")
+	}
+	if len(schemas) != 0 {
+		t.Errorf("expected empty schemas map, got %d entries", len(schemas))
+	}
+
+	// Manually seed the cache to verify Schemas() returns a copy
+	conn.schemaCache = NewTableSchemaCache(nil)
+	conn.schemaCache.Update("testdb", "users", &event.TableInfo{
+		Database: "testdb",
+		Table:    "users",
+		Columns: []event.ColumnInfo{
+			{Name: "id", Type: "int", Nullable: false},
+		},
+		PrimaryKeyColumns: []string{"id"},
+	})
+
+	schemas = conn.Schemas()
+	if schemas == nil {
+		t.Fatal("expected non-nil schemas map after seeding cache")
+	}
+	if len(schemas) != 1 {
+		t.Errorf("expected 1 schema entry, got %d", len(schemas))
+	}
+	info, ok := schemas["testdb.users"]
+	if !ok {
+		t.Fatal("expected 'testdb.users' key in schemas map")
+	}
+	if info.Database != "testdb" || info.Table != "users" {
+		t.Errorf("unexpected schema info: %+v", info)
+	}
+
+	// Verify it returns a copy: mutating returned map should not affect internal state
+	delete(schemas, "testdb.users")
+	schemas2 := conn.Schemas()
+	if len(schemas2) != 1 {
+		t.Error("expected internal cache to be unaffected by mutation of returned map")
 	}
 }
