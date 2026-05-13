@@ -287,17 +287,7 @@ func (c *Connector) GetSchema(database, table string) (*event.TableInfo, error) 
 // The returned map is a copy; mutations do not affect the internal cache.
 // Keys are in "database.table" format.
 func (c *Connector) Schemas() map[string]*event.TableInfo {
-	if c.schemaCache == nil {
-		return make(map[string]*event.TableInfo)
-	}
-	c.schemaCache.mu.RLock()
-	defer c.schemaCache.mu.RUnlock()
-
-	result := make(map[string]*event.TableInfo, len(c.schemaCache.schemas))
-	for key, schema := range c.schemaCache.schemas {
-		result[key] = schema
-	}
-	return result
+	return c.schemaCache.All()
 }
 
 // SyncScope returns the current sync scope.
