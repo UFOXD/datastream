@@ -43,7 +43,7 @@ func TestDatabaseDiscovery_IsWildcardMode(t *testing.T) {
 				Level:     SyncLevelDatabase,
 				Databases: DatabaseScope{Names: tt.names},
 			}
-			d := NewDatabaseDiscovery(scope, nil, nil)
+			d := NewDatabaseDiscovery(scope, nil)
 			if got := d.IsWildcardMode(); got != tt.want {
 				t.Errorf("IsWildcardMode() = %v, want %v", got, tt.want)
 			}
@@ -58,7 +58,7 @@ func TestDatabaseDiscovery_ShouldSyncDatabase(t *testing.T) {
 		Level:     SyncLevelDatabase,
 		Databases: DatabaseScope{Names: []string{"*"}},
 	}
-	d := NewDatabaseDiscovery(scope, nil, nil)
+	d := NewDatabaseDiscovery(scope, nil)
 
 	for _, db := range []string{"any_db", "another", "information_schema"} {
 		if !d.ShouldSyncDatabase(db) {
@@ -72,7 +72,7 @@ func TestDatabaseDiscovery_ShouldSyncDatabase_SpecificDBs(t *testing.T) {
 		Level:     SyncLevelDatabase,
 		Databases: DatabaseScope{Names: []string{"db1", "db2"}},
 	}
-	d := NewDatabaseDiscovery(scope, nil, nil)
+	d := NewDatabaseDiscovery(scope, nil)
 
 	if !d.ShouldSyncDatabase("db1") {
 		t.Error("ShouldSyncDatabase(db1) = false, want true")
@@ -162,7 +162,7 @@ func TestDatabaseDiscovery_ShouldSyncTable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := NewDatabaseDiscovery(tt.scope, nil, nil)
+			d := NewDatabaseDiscovery(tt.scope, nil)
 			got := d.ShouldSyncTable(tt.db, tt.table)
 			if got != tt.wantSync {
 				t.Errorf("ShouldSyncTable(%q, %q) = %v, want %v", tt.db, tt.table, got, tt.wantSync)
@@ -178,7 +178,7 @@ func TestDatabaseDiscovery_OnDDLEvent_CreateTable(t *testing.T) {
 		Level:     SyncLevelDatabase,
 		Databases: DatabaseScope{Names: []string{"*"}},
 	}
-	d := NewDatabaseDiscovery(scope, nil, nil)
+	d := NewDatabaseDiscovery(scope, nil)
 	if err := d.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestDatabaseDiscovery_OnDDLEvent_CreateDatabase(t *testing.T) {
 		Level:     SyncLevelDatabase,
 		Databases: DatabaseScope{Names: []string{"*"}},
 	}
-	d := NewDatabaseDiscovery(scope, nil, nil)
+	d := NewDatabaseDiscovery(scope, nil)
 	if err := d.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestDatabaseDiscovery_OnDDLEvent_DropTable(t *testing.T) {
 		Level:     SyncLevelDatabase,
 		Databases: DatabaseScope{Names: []string{"*"}},
 	}
-	d := NewDatabaseDiscovery(scope, nil, nil)
+	d := NewDatabaseDiscovery(scope, nil)
 	// Pre-seed a table.
 	d.knownTables["mydb.orders"] = struct{}{}
 
@@ -286,7 +286,7 @@ func TestDatabaseDiscovery_OnDDLEvent_Nil(t *testing.T) {
 		Level:     SyncLevelDatabase,
 		Databases: DatabaseScope{Names: []string{"*"}},
 	}
-	d := NewDatabaseDiscovery(scope, nil, nil)
+	d := NewDatabaseDiscovery(scope, nil)
 
 	if err := d.OnDDLEvent(nil); err != nil {
 		t.Errorf("OnDDLEvent(nil) returned error: %v", err)
@@ -302,6 +302,43 @@ func TestDatabaseDiscovery_OnDDLEvent_Nil(t *testing.T) {
 	}
 }
 
+// --- OnDDLEvent: DROP DATABASE cleans up tables ---
+
+func TestDatabaseDiscovery_OnDDLEvent_DropDatabase_CleansUpTables(t *testing.T) {
+	scope := &SyncScope{
+		Level:     SyncLevelDatabase,
+		Databases: DatabaseScope{Names: []string{"*"}},
+	}
+	d := NewDatabaseDiscovery(scope, nil)
+	// Pre-seed a database and two tables belonging to it, plus a table from another db.
+	d.knownDBs["mydb"] = struct{}{}
+	d.knownTables["mydb.users"] = struct{}{}
+	d.knownTables["mydb.orders"] = struct{}{}
+	d.knownTables["otherdb.foo"] = struct{}{}
+
+	ev := makeChangeEvent("mydb", "", parser.DDLTypeDropDatabase)
+	if err := d.OnDDLEvent(ev); err != nil {
+		t.Fatalf("OnDDLEvent() error: %v", err)
+	}
+
+	select {
+	case got := <-d.Events():
+		if got.Type != DiscoveryTypeDatabaseDropped {
+			t.Errorf("event type = %v, want %v", got.Type, DiscoveryTypeDatabaseDropped)
+		}
+	default:
+		t.Error("expected a DiscoveryEvent, got none")
+	}
+
+	if len(d.KnownDatabases()) != 0 {
+		t.Errorf("expected no known databases after DROP, got %v", d.KnownDatabases())
+	}
+	tables := d.KnownTables()
+	if len(tables) != 1 || tables[0] != "otherdb.foo" {
+		t.Errorf("KnownTables() = %v, want [otherdb.foo]", tables)
+	}
+}
+
 // --- Start/Stop lifecycle ---
 
 func TestDatabaseDiscovery_StartStop(t *testing.T) {
@@ -309,7 +346,7 @@ func TestDatabaseDiscovery_StartStop(t *testing.T) {
 		Level:     SyncLevelDatabase,
 		Databases: DatabaseScope{Names: []string{"*"}},
 	}
-	d := NewDatabaseDiscovery(scope, nil, nil)
+	d := NewDatabaseDiscovery(scope, nil)
 
 	ctx := context.Background()
 	if err := d.Start(ctx); err != nil {

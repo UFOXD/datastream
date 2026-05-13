@@ -4,11 +4,14 @@ package source
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/UFOXD/datastream/pkg/event"
+	"github.com/UFOXD/datastream/pkg/logutil"
 	"github.com/UFOXD/datastream/pkg/parser"
+	"go.uber.org/zap"
 )
 
 // DatabaseDiscovery handles automatic discovery of databases and tables
@@ -17,14 +20,14 @@ import (
 type DatabaseDiscovery struct {
 	scope     *SyncScope
 	connector Connector
-	parser    parser.DDLParser
 
 	// Known databases and tables
 	knownDBs    map[string]struct{}
 	knownTables map[string]struct{}
 
 	// Event channel for notifications
-	eventCh chan *DiscoveryEvent
+	eventCh   chan *DiscoveryEvent
+	eventChClosed bool
 
 	mu     sync.RWMutex
 	ctx    context.Context
@@ -32,11 +35,10 @@ type DatabaseDiscovery struct {
 }
 
 // NewDatabaseDiscovery creates a new DatabaseDiscovery.
-func NewDatabaseDiscovery(scope *SyncScope, connector Connector, p parser.DDLParser) *DatabaseDiscovery {
+func NewDatabaseDiscovery(scope *SyncScope, connector Connector) *DatabaseDiscovery {
 	return &DatabaseDiscovery{
 		scope:       scope,
 		connector:   connector,
-		parser:      p,
 		knownDBs:    make(map[string]struct{}),
 		knownTables: make(map[string]struct{}),
 		eventCh:     make(chan *DiscoveryEvent, 64),
@@ -84,6 +86,9 @@ func (d *DatabaseDiscovery) Stop() error {
 	}
 	d.cancel()
 	d.cancel = nil
+	d.ctx = nil
+	d.eventChClosed = true
+	close(d.eventCh)
 	return nil
 }
 
@@ -124,6 +129,13 @@ func (d *DatabaseDiscovery) OnDDLEvent(ddlEvent *event.ChangeEvent) error {
 	case parser.DDLTypeDropDatabase:
 		if _, known := d.knownDBs[db]; known {
 			delete(d.knownDBs, db)
+			// Remove all tables belonging to the dropped database.
+			prefix := db + "."
+			for key := range d.knownTables {
+				if strings.HasPrefix(key, prefix) {
+					delete(d.knownTables, key)
+				}
+			}
 			d.emit(&DiscoveryEvent{
 				Type:     DiscoveryTypeDatabaseDropped,
 				Database: db,
@@ -145,7 +157,11 @@ func (d *DatabaseDiscovery) OnDDLEvent(ddlEvent *event.ChangeEvent) error {
 			// In wildcard mode, auto-add table to connector if it matches filter.
 			if d.IsWildcardMode() && d.scope.Databases.ShouldSyncTable(db, table) {
 				if d.connector != nil && d.ctx != nil {
-					_ = d.connector.AddTables(d.ctx, []string{key})
+					if err := d.connector.AddTables(d.ctx, []string{key}); err != nil {
+						logutil.L().Warn("failed to add table to connector",
+							zap.String("table", key),
+							zap.Error(err))
+					}
 				}
 			}
 		}
@@ -179,34 +195,23 @@ func (d *DatabaseDiscovery) OnDDLEvent(ddlEvent *event.ChangeEvent) error {
 }
 
 // resolveDDLType determines the parser.DDLType for a ChangeEvent.
-// It first checks event.DDLInfo type mapping, then falls back to
-// parsing the raw statement if a parser is configured.
+// It reads the explicit "ddl_type" key set by connectors in event metadata.
+// If the key is absent, it returns an error.
 func (d *DatabaseDiscovery) resolveDDLType(e *event.ChangeEvent) (parser.DDLType, error) {
-	if e.Schema != nil {
-		// Schema field present: no raw statement parsing needed; caller already
-		// set Table.Database/Name on the event. We rely on metadata.
-	}
-
-	// Check metadata for ddl_type hint set by connectors.
 	if e.Metadata != nil {
 		if rawType, ok := e.Metadata["ddl_type"]; ok {
 			return parser.DDLType(rawType), nil
 		}
 	}
-
-	// Fall back to parser if available.
-	if d.parser != nil && e.Schema != nil {
-		// We have a parser but no type hint; try to derive from statement.
-	}
-
-	// Use event DDL type mapping via Schema presence heuristic is unreliable;
-	// require explicit ddl_type metadata or a parseable statement.
-	// If neither is available, return unknown.
-	return parser.DDLTypeUnknown, ErrDiscoveryNotSupported.GenWithStack("cannot determine DDL type without metadata or parser")
+	return parser.DDLTypeUnknown, ErrDiscoveryNotSupported.GenWithStack("cannot determine DDL type: missing ddl_type metadata")
 }
 
-// emit sends a DiscoveryEvent non-blocking.
+// emit sends a DiscoveryEvent non-blocking. It is a no-op if the channel has
+// been closed (i.e. after Stop() has been called).
 func (d *DatabaseDiscovery) emit(e *DiscoveryEvent) {
+	if d.eventChClosed {
+		return
+	}
 	e.Timestamp = time.Now()
 	select {
 	case d.eventCh <- e:
