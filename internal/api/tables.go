@@ -122,7 +122,7 @@ func (s *Server) getTableState(w http.ResponseWriter, r *http.Request) {
 
 	state, err := s.TableManager.GetTableState(db, table)
 	if err != nil {
-		s.writeError(w, http.StatusNotFound, err.Error())
+		s.writeError(w, http.StatusNotFound, "table not found")
 		return
 	}
 
@@ -156,7 +156,12 @@ func (s *Server) pauseTable(w http.ResponseWriter, r *http.Request) {
 	table := vars["table"]
 
 	if err := s.TableManager.PauseTable(r.Context(), db, table); err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		if errors.Is(err, source.ErrTableNotFound) {
+			s.writeError(w, http.StatusNotFound, "table not found")
+			return
+		}
+		log.Error("failed to pause table", zap.Error(err))
+		s.writeError(w, http.StatusInternalServerError, "failed to pause table")
 		return
 	}
 
@@ -175,7 +180,12 @@ func (s *Server) resumeTable(w http.ResponseWriter, r *http.Request) {
 	table := vars["table"]
 
 	if err := s.TableManager.ResumeTable(r.Context(), db, table); err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		if errors.Is(err, source.ErrTableNotFound) {
+			s.writeError(w, http.StatusNotFound, "table not found")
+			return
+		}
+		log.Error("failed to resume table", zap.Error(err))
+		s.writeError(w, http.StatusInternalServerError, "failed to resume table")
 		return
 	}
 
