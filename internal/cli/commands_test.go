@@ -237,3 +237,100 @@ func TestTaskStopCommandBuild(t *testing.T) {
 		t.Errorf("Expected use 'stop <id>', got '%s'", cmd.Use)
 	}
 }
+
+func TestBuildTablesCommand(t *testing.T) {
+	cli := New(nil)
+	cmd := cli.buildTablesCommand()
+
+	if cmd == nil {
+		t.Fatal("Expected non-nil tables command")
+	}
+
+	if cmd.Use != "tables" {
+		t.Errorf("Expected use 'tables', got '%s'", cmd.Use)
+	}
+
+	// Check subcommands exist
+	subcmds := cmd.Commands()
+	if len(subcmds) < 6 {
+		t.Errorf("Expected at least 6 tables subcommands, got %d", len(subcmds))
+	}
+}
+
+func TestTablesAddCommandBuild(t *testing.T) {
+	cli := New(nil)
+	cmd := cli.buildTablesAddCommand()
+
+	if cmd == nil {
+		t.Fatal("Expected non-nil tables add command")
+	}
+
+	if cmd.Use != "add <db.table>..." {
+		t.Errorf("Expected use 'add <db.table>...', got '%s'", cmd.Use)
+	}
+}
+
+func TestTablesRemoveCommandBuild(t *testing.T) {
+	cli := New(nil)
+	cmd := cli.buildTablesRemoveCommand()
+
+	if cmd == nil {
+		t.Fatal("Expected non-nil tables remove command")
+	}
+
+	if cmd.Use != "remove <db.table>..." {
+		t.Errorf("Expected use 'remove <db.table>...', got '%s'", cmd.Use)
+	}
+}
+
+func TestTablesListCommandBuild(t *testing.T) {
+	cli := New(nil)
+	cmd := cli.buildTablesListCommand()
+
+	if cmd == nil {
+		t.Fatal("Expected non-nil tables list command")
+	}
+
+	if cmd.Use != "list" {
+		t.Errorf("Expected use 'list', got '%s'", cmd.Use)
+	}
+}
+
+func TestTablesGetCommandBuild(t *testing.T) {
+	cli := New(nil)
+	cmd := cli.buildTablesGetCommand()
+
+	if cmd == nil {
+		t.Fatal("Expected non-nil tables get command")
+	}
+
+	if cmd.Use != "get <db.table>" {
+		t.Errorf("Expected use 'get <db.table>', got '%s'", cmd.Use)
+	}
+}
+
+func TestTablesPauseCommandBuild(t *testing.T) {
+	cli := New(nil)
+	cmd := cli.buildTablesPauseCommand()
+
+	if cmd == nil {
+		t.Fatal("Expected non-nil tables pause command")
+	}
+
+	if cmd.Use != "pause <db.table>" {
+		t.Errorf("Expected use 'pause <db.table>', got '%s'", cmd.Use)
+	}
+}
+
+func TestTablesResumeCommandBuild(t *testing.T) {
+	cli := New(nil)
+	cmd := cli.buildTablesResumeCommand()
+
+	if cmd == nil {
+		t.Fatal("Expected non-nil tables resume command")
+	}
+
+	if cmd.Use != "resume <db.table>" {
+		t.Errorf("Expected use 'resume <db.table>', got '%s'", cmd.Use)
+	}
+}

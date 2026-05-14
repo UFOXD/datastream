@@ -70,6 +70,7 @@ func (c *CLI) buildRootCommand() *cobra.Command {
 	// Add subcommands
 	root.AddCommand(c.buildTaskCommand())
 	root.AddCommand(c.buildNodeCommand())
+	root.AddCommand(c.buildTablesCommand())
 	root.AddCommand(c.buildVersionCommand())
 
 	return root
