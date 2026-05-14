@@ -7,7 +7,7 @@ Pipeline Layer 负责事件的处理管道，实现 Source → Filter → Transf
 ## 1. 模块结构
 
 ```
-pkg/
+internal/
 ├── pipeline/         # Pipeline 核心
 │   ├── pipeline.go   # Pipeline 定义与生命周期
 │   ├── runner.go     # Pipeline 运行器
@@ -24,6 +24,8 @@ pkg/
     ├── router.go     # Router 接口
     └── dispatcher.go # 分发器
 ```
+
+> **说明**：pipeline、filter、transform、router 均属于业务特定逻辑，不作为可复用库对外提供，因此遵循 Go 最佳实践放置于 `internal/` 目录，确保仅本项目可导入。
 
 ---
 

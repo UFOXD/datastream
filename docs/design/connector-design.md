@@ -74,19 +74,20 @@ type SourceConnector interface {
     // 基础生命周期
     Initialize(ctx context.Context, config *SourceConfig) error
     Start(ctx context.Context) error
-    Stop() error
+    Stop(ctx context.Context) error  // 实际实现：接受 ctx 参数，优于设计阶段的无参版本
     
     // 事件流
     Events() <-chan *ChangeEvent
     Errors() <-chan error
     
     // 位点管理
-    Position() Position
+    GetPosition() Position  // 实际实现：语义更清晰
+    SetPosition(pos Position) error  // 实际实现：语义更清晰
     Seek(position Position) error
     
     // Schema 管理
     Schema(tableID TableID) (*TableSchema, error)
-    Schemas() map[TableID]*TableSchema
+    Schemas() map[TableID]*TableSchema  // 已实现：返回所有缓存的表 Schema
     
     // 同步范围管理
     SyncScope() *SyncScope
@@ -97,6 +98,11 @@ type SourceConnector interface {
     ListTables() []string
 }
 ```
+
+> **实现说明**：
+> - `Stop(ctx context.Context)` — 实际实现接受 context 参数，支持带超时的优雅关闭，优于设计阶段的 `Stop() error`
+> - `GetPosition()` / `SetPosition(pos)` — 实际实现采用 getter/setter 命名，语义比 `Position()` / `Seek()` 更清晰
+> - `Schemas()` — 已在 MySQL Connector 中实现，返回 SchemaCache 中所有已缓存的表 Schema
 
 ### 2.2 配置定义
 
@@ -173,6 +179,8 @@ type StreamingConfig struct {
 ## 3. Database 级别自动发现机制
 
 ### 3.1 DatabaseDiscovery
+
+> **实现说明**：`DatabaseDiscovery` 实现于 `internal/source/database_discovery.go`，在通配符模式（`*`）下监听 DDL 事件，自动发现并纳入新建的数据库和表。
 
 ```go
 // DatabaseDiscovery Database 级别的数据库/表自动发现器
@@ -266,6 +274,8 @@ func (d *DatabaseDiscovery) Watch(ctx context.Context) error {
 ## 4. Table 级别动态表管理
 
 ### 4.1 TableManager
+
+> **实现说明**：`TableManager` 实现于 `internal/source/table_manager.go`，提供 API 驱动的表管理能力，支持运行时动态添加和移除同步表。
 
 ```go
 // TableManager Table 级别的表管理器
