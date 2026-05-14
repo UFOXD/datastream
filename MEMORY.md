@@ -453,3 +453,69 @@ go build ./... && go test ./...
 2. **TableManager**: 提供运行时动态增减同步表的能力，支持暂停/恢复单表同步
 3. **Schemas()**: 暴露MySQL连接器内部的schema缓存，供上层组件（如DatabaseDiscovery）使用
 4. **Table API**: RESTful端点与TableManager集成，支持HTTP方式管理同步表
+
+---
+
+## 📋 待完成工作 (Todo)
+
+### 优先级 P0 - 核心功能完善
+
+| 任务 | 说明 | 状态 |
+|------|------|------|
+| CLI表管理命令 | `datastream-ctl tables add/remove/list` 命令 | ⏳ 待开始 |
+| 设计文档同步 | 更新 `docs/design/` 下所有文档反映实际实现 | ✅ 已完成 |
+
+### 优先级 P1 - 功能增强
+
+| 任务 | 说明 | 状态 |
+|------|------|------|
+| 数据库兼容性测试 | MySQL/PostgreSQL/MongoDB 端到端集成测试 | ⏳ 待开始 |
+| 性能基准测试 | 各连接器的吞吐量和延迟基准 | ⏳ 待开始 |
+| 监控指标集成 | Prometheus metrics 端点暴露 | ⏳ 待开始 |
+
+### 优先级 P2 - 文档与部署
+
+| 任务 | 说明 | 状态 |
+|------|------|------|
+| API文档 | OpenAPI/Swagger 文档生成 | ⏳ 待开始 |
+| 部署指南 | Docker/K8s 部署文档 | ⏳ 待开始 |
+| 用户手册 | 端到端使用指南 | ⏳ 待开始 |
+
+### 技术债务
+
+| 项目 | 说明 | 优先级 |
+|------|------|--------|
+| SchemaFetcher 优化 | TableManager.AddTables 在锁内调用FetchSchema，可能导致阻塞 | P2 |
+| DDLDiscovery清理 | `DDLDiscovery` 的 DropDatabase 逻辑与 `DatabaseDiscovery` 同步 | P3 |
+
+---
+
+## 2026-05-14 会话记录
+
+### 会话概要
+
+- **目标**: 完成设计文档与实际实现对齐，实现 DatabaseDiscovery、TableManager 和 Table API
+- **方法**: 使用 `superpowers:subagent-driven-development` 技能，每个任务两阶段审查（spec合规 + 代码质量）
+- **结果**: 6个任务全部完成，36个测试包全部通过
+
+### 实现质量亮点
+
+1. **代码审查流程**: 每个任务经过 spec reviewer 和 code reviewer 双重审查
+2. **问题修复**: 发现并修复了多个潜在问题（如通道死锁、错误信息泄露、JSON序列化问题）
+3. **设计对齐**: 更新了 `pipeline-design.md` 和 `connector-design.md` 反映实际实现
+
+### Git Commits (Phase 10)
+
+| Commit | Description |
+|--------|-------------|
+| `d83ec7f` | feat(source): add Schemas() method to MySQL connector |
+| `3e5b2fb` | feat(source): implement DatabaseDiscovery for wildcard mode |
+| `7ac43ee` | feat(source): implement TableManager for API-driven table management |
+| `2b7ac08` | docs: update design documents to reflect actual implementation |
+| `d1e7e4a` | docs: update MEMORY.md with Phase 10 completion |
+
+### 下一步建议
+
+1. **集成测试**: 使用真实数据库测试 DatabaseDiscovery 的自动发现功能
+2. **CLI集成**: 添加 `datastream-ctl tables` 命令行支持
+3. **文档完善**: 编写 API 使用示例和最佳实践
