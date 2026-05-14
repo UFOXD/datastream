@@ -462,7 +462,7 @@ go build ./... && go test ./...
 
 | 任务 | 说明 | 状态 |
 |------|------|------|
-| CLI表管理命令 | `datastream-ctl tables add/remove/list` 命令 | ⏳ 待开始 |
+| CLI表管理命令 | `datastream-ctl tables add/remove/list/get/pause/resume` 命令 | ✅ 已完成 |
 | 设计文档同步 | 更新 `docs/design/` 下所有文档反映实际实现 | ✅ 已完成 |
 
 ### 优先级 P1 - 功能增强
@@ -517,5 +517,54 @@ go build ./... && go test ./...
 ### 下一步建议
 
 1. **集成测试**: 使用真实数据库测试 DatabaseDiscovery 的自动发现功能
-2. **CLI集成**: 添加 `datastream-ctl tables` 命令行支持
+2. ~~**CLI集成**: 添加 `datastream-ctl tables` 命令行支持~~ ✅ 已完成
 3. **文档完善**: 编写 API 使用示例和最佳实践
+
+---
+
+## 2026-05-14 CLI Tables 命令实现
+
+### 完成的任务
+
+| 任务 | 状态 |
+|------|------|
+| CLI tables 命令 (add/remove/list/get/pause/resume) | ✅ 完成 |
+| 重构 main.go 使用 Cobra CLI | ✅ 完成 |
+| 添加 CLI 测试 | ✅ 完成 |
+
+### 新增/修改的文件
+
+| 文件路径 | 操作类型 | 说明 |
+|---------|---------|------|
+| `internal/cli/tables.go` | 新增 | tables 子命令实现 (6个命令) |
+| `cmd/datastream-ctl/main.go` | 修改 | 重构为使用 Cobra CLI |
+| `internal/cli/commands.go` | 修改 | 添加 tables 子命令 |
+| `internal/cli/commands_test.go` | 修改 | 添加 tables 命令测试 |
+
+### Git Commits
+
+| Commit | Description |
+|--------|-------------|
+| `b0ea83a` | feat(cli): add tables command for sync table management |
+
+### 命令用法
+
+```bash
+# 添加表到同步列表
+datastream-ctl tables add mydb.users mydb.orders
+
+# 从同步列表移除表
+datastream-ctl tables remove mydb.users
+
+# 列出所有同步表
+datastream-ctl tables list
+datastream-ctl tables list --database mydb
+
+# 获取表同步状态
+datastream-ctl tables get mydb.users
+
+# 暂停/恢复表同步
+datastream-ctl tables pause mydb.users
+datastream-ctl tables resume mydb.users
+```
+
