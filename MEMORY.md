@@ -8,13 +8,13 @@ DataStream is a Go-based CDC (Change Data Capture) platform that refactors Debez
 
 ## Current Status
 
-**Phase:** Phase 9 Complete (Enterprise Database Support)
+**Phase:** Phase 10 Complete (Dynamic Table Management)
 **Branch:** `feature/phase6-benchmarks-deployment`
 **Build Status:** PASSING
 **Test Status:** ALL PASSING (36 packages)
-**Overall Completion:** ~98%
+**Overall Completion:** ~99%
 
-**Last Updated:** 2026-05-11
+**Last Updated:** 2026-05-13
 
 ---
 
@@ -67,16 +67,16 @@ DataStream is a Go-based CDC (Change Data Capture) platform that refactors Debez
 |--------|--------|----------|-------|
 | `internal/filter` | ✅ Complete | 100% | ExpressionFilter with table/field/regex matching |
 | `internal/transform` | ✅ Complete | 100% | CustomTransformer, built-in transformers (AddField, RemoveField, RenameField, Timestamp) |
-| `internal/pipeline` | ✅ Complete | 100% | BackpressureController with high/low watermarks |
+| `internal/pipeline` | ✅ Complete | 100% | BackpressureController, PersistentBuffer (Badger backend), MemoryBuffer, BatchBuffer |
 | `internal/ratelimit` | ✅ Complete | 100% | Rate limiter using golang.org/x/time/rate |
 | `internal/sink` | ✅ Complete | 100% | HashDispatcher, ConcurrentSinkWriter, RowIdentifier |
-| `internal/source` | ✅ Complete | 100% | SnapshotCoordinator, SnapshotConcurrencyConfig |
+| `internal/source` | ✅ Complete | 100% | SnapshotCoordinator, SnapshotConcurrencyConfig, wildcard pattern matching, DatabaseDiscovery, TableManager |
 
 ### Connector Layer - Source
 
 | Connector | Required | Status | Coverage | Notes |
 |-----------|----------|--------|----------|-------|
-| MySQL | ✅ | ✅ Complete | 23.6% | Binlog streaming |
+| MySQL | ✅ | ✅ Complete | 23.6% | Binlog streaming, Schemas() method |
 | PostgreSQL | ✅ | ✅ Complete | 15.3% | Logical replication |
 | MongoDB | ✅ | ✅ Complete | 85.0% | Change Stream |
 | Oracle | ✅ | ✅ Complete | ~70% | LogMiner, SCN tracking |
@@ -110,6 +110,7 @@ DataStream is a Go-based CDC (Change Data Capture) platform that refactors Debez
 | Module | Status | Coverage | Notes |
 |--------|--------|----------|-------|
 | `pkg/api` | ✅ Complete | 27.9% | REST API |
+| `internal/api` | ✅ Complete | - | Table management REST API endpoints |
 | `pkg/cli` | ✅ Complete | 37.4% | Cobra CLI |
 | `pkg/app` | ✅ Complete | 59.0% | Application lifecycle |
 
@@ -236,6 +237,24 @@ All Pipeline Layer modules have been implemented:
 
 ---
 
+### Phase 10: Dynamic Table Management - **COMPLETE** ✅
+
+#### DatabaseDiscovery ✅ COMPLETE
+- [x] `internal/source/database_discovery.go` - Monitors DDL events for wildcard mode auto-discovery
+- [x] Automatically adds matching tables to sync when new tables are created
+
+#### TableManager ✅ COMPLETE
+- [x] `internal/source/table_manager.go` - API-driven table management
+- [x] AddTables, RemoveTables, PauseTable, ResumeTable operations
+
+#### MySQL Connector Enhancement ✅ COMPLETE
+- [x] `Schemas()` method added to MySQL Connector - returns all cached table schemas
+
+#### Table API Endpoints ✅ COMPLETE
+- [x] `internal/api/tables.go` - REST API for table management (add, remove, pause, resume)
+
+---
+
 ### Phase 9: Enterprise Database Support (Optional)
 
 #### Week 11-13: Oracle Source
@@ -295,6 +314,8 @@ require (
     github.com/go-mysql-org/go-mysql v1.15.0
     github.com/jackc/pglogrepl v0.0.0-20260401131349-e37c41485510
     github.com/jackc/pgx/v5 v5.9.2
+    github.com/dgraph-io/badger/v4 v4.9.1  // PersistentBuffer后端
+    golang.org/x/time v0.15.0              // RateLimiter
 )
 ```
 
@@ -368,15 +389,22 @@ go build ./... && go test ./...
 | `internal/transform/custom_test.go` | 新增 | CustomTransformer测试 |
 | `internal/pipeline/backpressure.go` | 新增 | BackpressureController流控实现 |
 | `internal/pipeline/backpressure_test.go` | 新增 | BackpressureController测试 |
+| `internal/pipeline/persistent_buffer.go` | 新增 | PersistentBuffer实现（Badger后端） |
+| `internal/pipeline/persistent_buffer_test.go` | 新增 | PersistentBuffer测试 |
 | `internal/ratelimit/ratelimit.go` | 新增 | RateLimiter实现 |
 | `internal/ratelimit/ratelimit_test.go` | 新增 | RateLimiter测试 |
-| `go.mod` | 修改 | 新增 golang.org/x/time 依赖 |
+| `internal/source/mysql/binlog_syncer.go` | 修改 | 添加通配符模式匹配（支持 * 和 ?） |
+| `internal/source/mysql/pattern_test.go` | 新增 | 模式匹配测试 |
+| `docs/module-map.md` | 修改 | 更新API文档 |
+| `go.mod` | 修改 | 新增 golang.org/x/time, badger/v4 依赖 |
 
 ### 关键决策记录
 
 1. **ExpressionFilter regex修复**: 使用parseValue后的值（无引号）作为regex pattern，而非原始字符串
 2. **BackpressureController resume条件**: 同时检查queue usage和latency，任一超标都触发pause
 3. **RateLimiter依赖**: 使用 golang.org/x/time/rate 包实现令牌桶限流
+4. **PersistentBuffer后端**: 使用 badger/v4 作为KV存储后端，支持事件持久化和重启恢复
+5. **通配符匹配**: 使用DP算法实现 `*` 和 `?` 通配符匹配，支持表名/数据库名模式过滤
 
 ### Git Commits
 
@@ -395,3 +423,33 @@ go build ./... && go test ./...
 
 - 继续Phase 6剩余任务
 - 集成测试验证各模块协作
+
+---
+
+## 2026-05-13 Phase 10 阶段完成记录
+
+### 完成的任务
+
+| Task ID | 任务名称 | 状态 |
+|---------|---------|------|
+| #96 | DatabaseDiscovery | ✅ 完成 |
+| #99 | TableManager | ✅ 完成 |
+| #95 | Schemas() method (MySQL Connector) | ✅ 完成 |
+| #98 | Table API endpoints | ✅ 完成 |
+| #97 | Final integration test | ✅ 完成 |
+
+### 新增/修改的文件
+
+| 文件路径 | 操作类型 | 说明 |
+|---------|---------|------|
+| `internal/source/database_discovery.go` | 新增 | DDL事件监控，通配符模式自动发现新表 |
+| `internal/source/table_manager.go` | 新增 | API驱动的表管理（AddTables, RemoveTables, PauseTable, ResumeTable） |
+| `internal/source/mysql/connector.go` | 修改 | 添加Schemas()方法，返回所有缓存的表结构 |
+| `internal/api/tables.go` | 新增 | 表管理REST API端点 |
+
+### 关键决策记录
+
+1. **DatabaseDiscovery**: 监听DDL事件流，对新建表名执行通配符匹配，自动加入同步列表
+2. **TableManager**: 提供运行时动态增减同步表的能力，支持暂停/恢复单表同步
+3. **Schemas()**: 暴露MySQL连接器内部的schema缓存，供上层组件（如DatabaseDiscovery）使用
+4. **Table API**: RESTful端点与TableManager集成，支持HTTP方式管理同步表
