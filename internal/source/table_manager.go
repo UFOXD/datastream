@@ -17,6 +17,8 @@ type TableOperationType string
 const (
 	TableOpAdd    TableOperationType = "add"
 	TableOpRemove TableOperationType = "remove"
+	TableOpPause  TableOperationType = "paused"
+	TableOpResume TableOperationType = "resumed"
 )
 
 // TableOperationEvent represents a table operation event.
@@ -60,6 +62,7 @@ type TableSyncState struct {
 	Schema      *event.TableInfo
 	AddedAt     time.Time
 	SyncStarted time.Time
+	PausedAt    time.Time `json:"paused_at,omitempty"`
 	Error       error
 }
 
@@ -77,14 +80,14 @@ type TableManagerConfig struct {
 	SchemaFetcher SchemaFetcher
 
 	// EventChannel receives table operation events.
-	EventChannel chan<- *TableOperationEvent
+	EventChannel chan *TableOperationEvent
 }
 
 // TableManager manages tables for table-level synchronization.
 type TableManager struct {
 	scope         *TableScope
 	schemaFetcher SchemaFetcher
-	eventCh       chan<- *TableOperationEvent
+	eventCh       chan *TableOperationEvent
 	syncTables    map[string]*TableSyncState
 	mu            sync.RWMutex
 }
@@ -278,4 +281,65 @@ func (tm *TableManager) UpdateTableStatus(database, table string, status TableSy
 	}
 
 	return nil
+}
+
+// PauseTable pauses syncing of a table.
+func (tm *TableManager) PauseTable(ctx context.Context, database, table string) error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	key := database + "." + table
+	state, exists := tm.syncTables[key]
+	if !exists {
+		return fmt.Errorf("table %s.%s not found", database, table)
+	}
+
+	state.Status = TableStatusPaused
+	state.PausedAt = time.Now()
+
+	if tm.eventCh != nil {
+		tm.eventCh <- &TableOperationEvent{
+			Operation: TableOpPause,
+			TableID: TableID{
+				Database: database,
+				Table:    table,
+			},
+			Timestamp: time.Now(),
+		}
+	}
+
+	return nil
+}
+
+// ResumeTable resumes syncing of a paused table.
+func (tm *TableManager) ResumeTable(ctx context.Context, database, table string) error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	key := database + "." + table
+	state, exists := tm.syncTables[key]
+	if !exists {
+		return fmt.Errorf("table %s.%s not found", database, table)
+	}
+
+	state.Status = TableStatusPending
+	state.PausedAt = time.Time{} // Clear paused time
+
+	if tm.eventCh != nil {
+		tm.eventCh <- &TableOperationEvent{
+			Operation: TableOpResume,
+			TableID: TableID{
+				Database: database,
+				Table:    table,
+			},
+			Timestamp: time.Now(),
+		}
+	}
+
+	return nil
+}
+
+// Events returns a read-only channel for table operation events.
+func (tm *TableManager) Events() <-chan *TableOperationEvent {
+	return tm.eventCh
 }

@@ -351,6 +351,115 @@ func TestTableManager_AddTables_InvalidFormat(t *testing.T) {
 	}
 }
 
+func TestTableManager_PauseTable(t *testing.T) {
+	eventCh := makeEventChannel()
+	scope := &TableScope{
+		Names: []string{"db1.users"},
+	}
+	tm := NewTableManager(&TableManagerConfig{
+		Scope:        scope,
+		EventChannel: eventCh,
+	})
+
+	ctx := context.Background()
+
+	// Pause existing table
+	err := tm.PauseTable(ctx, "db1", "users")
+	if err != nil {
+		t.Fatalf("PauseTable() error = %v", err)
+	}
+
+	state, err := tm.GetTableState("db1", "users")
+	if err != nil {
+		t.Fatalf("GetTableState() error = %v", err)
+	}
+	if state.Status != TableStatusPaused {
+		t.Errorf("status = %q, want %q", state.Status, TableStatusPaused)
+	}
+	if state.PausedAt.IsZero() {
+		t.Error("PausedAt should be set after pausing")
+	}
+
+	// Verify event
+	if len(eventCh) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(eventCh))
+	}
+	ev := <-eventCh
+	if ev.Operation != TableOpPause {
+		t.Errorf("event operation = %q, want %q", ev.Operation, TableOpPause)
+	}
+	if ev.TableID.Database != "db1" || ev.TableID.Table != "users" {
+		t.Errorf("event tableID = %v, want db1.users", ev.TableID)
+	}
+	if ev.Timestamp.IsZero() {
+		t.Error("event timestamp is zero")
+	}
+
+	// Pause non-existent table should fail
+	err = tm.PauseTable(ctx, "db1", "nonexistent")
+	if err == nil {
+		t.Error("PauseTable() non-existent table should return error")
+	}
+}
+
+func TestTableManager_ResumeTable(t *testing.T) {
+	eventCh := makeEventChannel()
+	scope := &TableScope{
+		Names: []string{"db1.users"},
+	}
+	tm := NewTableManager(&TableManagerConfig{
+		Scope:        scope,
+		EventChannel: eventCh,
+	})
+
+	ctx := context.Background()
+
+	// First pause the table
+	err := tm.PauseTable(ctx, "db1", "users")
+	if err != nil {
+		t.Fatalf("PauseTable() error = %v", err)
+	}
+	<-eventCh // drain pause event
+
+	// Resume the table
+	err = tm.ResumeTable(ctx, "db1", "users")
+	if err != nil {
+		t.Fatalf("ResumeTable() error = %v", err)
+	}
+
+	state, err := tm.GetTableState("db1", "users")
+	if err != nil {
+		t.Fatalf("GetTableState() error = %v", err)
+	}
+	if state.Status != TableStatusPending {
+		t.Errorf("status = %q, want %q", state.Status, TableStatusPending)
+	}
+	if !state.PausedAt.IsZero() {
+		t.Error("PausedAt should be cleared after resuming")
+	}
+
+	// Verify event
+	if len(eventCh) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(eventCh))
+	}
+	ev := <-eventCh
+	if ev.Operation != TableOpResume {
+		t.Errorf("event operation = %q, want %q", ev.Operation, TableOpResume)
+	}
+	if ev.TableID.Database != "db1" || ev.TableID.Table != "users" {
+		t.Errorf("event tableID = %v, want db1.users", ev.TableID)
+	}
+	if ev.Timestamp.IsZero() {
+		t.Error("event timestamp is zero")
+	}
+
+	// Resume non-existent table should fail
+	err = tm.ResumeTable(ctx, "db1", "nonexistent")
+	if err == nil {
+		t.Error("ResumeTable() non-existent table should return error")
+	}
+}
+
 func TestTableManager_EventTimestamp(t *testing.T) {
 	eventCh := makeEventChannel()
 	tm := NewTableManager(&TableManagerConfig{
