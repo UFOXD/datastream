@@ -17,8 +17,8 @@ type TableOperationType string
 const (
 	TableOpAdd    TableOperationType = "add"
 	TableOpRemove TableOperationType = "remove"
-	TableOpPause  TableOperationType = "paused"
-	TableOpResume TableOperationType = "resumed"
+	TableOpPause  TableOperationType = "pause"
+	TableOpResume TableOperationType = "resume"
 )
 
 // TableOperationEvent represents a table operation event.
@@ -135,17 +135,19 @@ func parseTableName(name string) (database, table string, err error) {
 
 // AddTables adds tables to the sync scope and emits TableOpAdd events.
 func (tm *TableManager) AddTables(ctx context.Context, tables []string) error {
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
+	var events []*TableOperationEvent
 
+	tm.mu.Lock()
 	for _, name := range tables {
 		database, table, err := parseTableName(name)
 		if err != nil {
+			tm.mu.Unlock()
 			return err
 		}
 
 		key := tableKey(database, table)
 		if _, exists := tm.syncTables[key]; exists {
+			tm.mu.Unlock()
 			return ErrTableAlreadyExists.GenWithStackByArgs(name)
 		}
 
@@ -154,6 +156,7 @@ func (tm *TableManager) AddTables(ctx context.Context, tables []string) error {
 		if tm.schemaFetcher != nil {
 			schema, err = tm.schemaFetcher.FetchSchema(ctx, database, table)
 			if err != nil {
+				tm.mu.Unlock()
 				return err
 			}
 		}
@@ -173,14 +176,22 @@ func (tm *TableManager) AddTables(ctx context.Context, tables []string) error {
 			tm.scope.Names = append(tm.scope.Names, name)
 		}
 
-		// Emit event
 		if tm.eventCh != nil {
-			tm.eventCh <- &TableOperationEvent{
+			events = append(events, &TableOperationEvent{
 				Operation: TableOpAdd,
 				TableID:   tableID,
 				Schema:    schema,
 				Timestamp: now,
-			}
+			})
+		}
+	}
+	tm.mu.Unlock()
+
+	for _, ev := range events {
+		select {
+		case tm.eventCh <- ev:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 
@@ -189,18 +200,20 @@ func (tm *TableManager) AddTables(ctx context.Context, tables []string) error {
 
 // RemoveTables removes tables from the sync scope and emits TableOpRemove events.
 func (tm *TableManager) RemoveTables(ctx context.Context, tables []string) error {
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
+	var events []*TableOperationEvent
 
+	tm.mu.Lock()
 	for _, name := range tables {
 		database, table, err := parseTableName(name)
 		if err != nil {
+			tm.mu.Unlock()
 			return err
 		}
 
 		key := tableKey(database, table)
 		state, exists := tm.syncTables[key]
 		if !exists {
+			tm.mu.Unlock()
 			return ErrTableNotFound.GenWithStackByArgs(name)
 		}
 
@@ -217,14 +230,22 @@ func (tm *TableManager) RemoveTables(ctx context.Context, tables []string) error
 			tm.scope.Names = names
 		}
 
-		// Emit event
 		if tm.eventCh != nil {
-			tm.eventCh <- &TableOperationEvent{
+			events = append(events, &TableOperationEvent{
 				Operation: TableOpRemove,
 				TableID:   state.TableID,
 				Schema:    state.Schema,
 				Timestamp: time.Now(),
-			}
+			})
+		}
+	}
+	tm.mu.Unlock()
+
+	for _, ev := range events {
+		select {
+		case tm.eventCh <- ev:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 
@@ -261,7 +282,8 @@ func (tm *TableManager) GetTableState(database, table string) (*TableSyncState, 
 	if !exists {
 		return nil, ErrTableNotFound.GenWithStackByArgs(tableKey(database, table))
 	}
-	return state, nil
+	stateCopy := *state
+	return &stateCopy, nil
 }
 
 // UpdateTableStatus updates the sync status for the given table.
@@ -285,20 +307,21 @@ func (tm *TableManager) UpdateTableStatus(database, table string, status TableSy
 
 // PauseTable pauses syncing of a table.
 func (tm *TableManager) PauseTable(ctx context.Context, database, table string) error {
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
+	var ev *TableOperationEvent
 
-	key := database + "." + table
+	tm.mu.Lock()
+	key := tableKey(database, table)
 	state, exists := tm.syncTables[key]
 	if !exists {
-		return fmt.Errorf("table %s.%s not found", database, table)
+		tm.mu.Unlock()
+		return ErrTableNotFound.GenWithStackByArgs(key)
 	}
 
 	state.Status = TableStatusPaused
 	state.PausedAt = time.Now()
 
 	if tm.eventCh != nil {
-		tm.eventCh <- &TableOperationEvent{
+		ev = &TableOperationEvent{
 			Operation: TableOpPause,
 			TableID: TableID{
 				Database: database,
@@ -307,32 +330,51 @@ func (tm *TableManager) PauseTable(ctx context.Context, database, table string) 
 			Timestamp: time.Now(),
 		}
 	}
+	tm.mu.Unlock()
+
+	if ev != nil {
+		select {
+		case tm.eventCh <- ev:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 
 	return nil
 }
 
 // ResumeTable resumes syncing of a paused table.
 func (tm *TableManager) ResumeTable(ctx context.Context, database, table string) error {
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
+	var ev *TableOperationEvent
 
-	key := database + "." + table
+	tm.mu.Lock()
+	key := tableKey(database, table)
 	state, exists := tm.syncTables[key]
 	if !exists {
-		return fmt.Errorf("table %s.%s not found", database, table)
+		tm.mu.Unlock()
+		return ErrTableNotFound.GenWithStackByArgs(key)
 	}
 
 	state.Status = TableStatusPending
 	state.PausedAt = time.Time{} // Clear paused time
 
 	if tm.eventCh != nil {
-		tm.eventCh <- &TableOperationEvent{
+		ev = &TableOperationEvent{
 			Operation: TableOpResume,
 			TableID: TableID{
 				Database: database,
 				Table:    table,
 			},
 			Timestamp: time.Now(),
+		}
+	}
+	tm.mu.Unlock()
+
+	if ev != nil {
+		select {
+		case tm.eventCh <- ev:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 
