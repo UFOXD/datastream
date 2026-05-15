@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/UFOXD/datastream/internal/pipeline"
+	"github.com/UFOXD/datastream/internal/source"
 	"github.com/gorilla/mux"
 	"github.com/pingcap/log"
 	"go.uber.org/zap"
@@ -16,11 +17,12 @@ import (
 
 // Server represents the API server.
 type Server struct {
-	httpServer  *http.Server
-	router      *mux.Router
-	taskMgr     *pipeline.TaskManager
-	coordinator pipeline.Coordinator
-	config      *ServerConfig
+	httpServer   *http.Server
+	router       *mux.Router
+	taskMgr      *pipeline.TaskManager
+	coordinator  pipeline.Coordinator
+	TableManager *source.TableManager
+	config       *ServerConfig
 }
 
 // ServerConfig holds API server configuration.
@@ -86,6 +88,14 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/tasks/{id}/resume", s.resumeTask).Methods("POST")
 	api.HandleFunc("/tasks/{id}/position", s.getTaskPosition).Methods("GET")
 	api.HandleFunc("/tasks/{id}/position", s.setTaskPosition).Methods("PUT")
+
+	// Tables
+	api.HandleFunc("/tables", s.listTables).Methods("GET")
+	api.HandleFunc("/tables", s.addTables).Methods("POST")
+	api.HandleFunc("/tables", s.removeTables).Methods("DELETE")
+	api.HandleFunc("/tables/{db}/{table}", s.getTableState).Methods("GET")
+	api.HandleFunc("/tables/{db}/{table}/pause", s.pauseTable).Methods("POST")
+	api.HandleFunc("/tables/{db}/{table}/resume", s.resumeTable).Methods("POST")
 
 	// Nodes
 	api.HandleFunc("/nodes", s.listNodes).Methods("GET")

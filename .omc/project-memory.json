@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1778410378332,
+  "lastScanned": 1778659740885,
   "projectRoot": "/Users/peter/Codes/dts/datastream",
   "techStack": {
     "languages": [
@@ -26,8 +26,8 @@
     "runtime": null
   },
   "build": {
-    "buildCommand": "go build ./... 2>&1 | head -50",
-    "testCommand": "go test ./... -short 2>&1 | tail -20",
+    "buildCommand": "go build ./...",
+    "testCommand": "go test ./... 2>&1 | tail -20",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {}
@@ -55,7 +55,7 @@
       "path": "bin",
       "purpose": "Executable scripts",
       "fileCount": 2,
-      "lastAccessed": 1778410378300,
+      "lastAccessed": 1778659740862,
       "keyFiles": [
         "datastream",
         "datastream-ctl"
@@ -65,14 +65,14 @@
       "path": "cmd",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1778410378300,
+      "lastAccessed": 1778659740863,
       "keyFiles": []
     },
     "configs": {
       "path": "configs",
       "purpose": null,
       "fileCount": 1,
-      "lastAccessed": 1778410378300,
+      "lastAccessed": 1778659740863,
       "keyFiles": [
         "datastream.toml"
       ]
@@ -80,71 +80,75 @@
     "docs": {
       "path": "docs",
       "purpose": "Documentation",
-      "fileCount": 0,
-      "lastAccessed": 1778410378300,
-      "keyFiles": []
+      "fileCount": 1,
+      "lastAccessed": 1778659740863,
+      "keyFiles": [
+        "module-map.md"
+      ]
     },
     "internal": {
       "path": "internal",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1778410378300,
+      "lastAccessed": 1778659740863,
       "keyFiles": []
     },
     "pkg": {
       "path": "pkg",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1778410378300,
+      "lastAccessed": 1778659740863,
       "keyFiles": []
     },
     "proto": {
       "path": "proto",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1778410378301,
+      "lastAccessed": 1778659740863,
       "keyFiles": []
     },
     "scripts": {
       "path": "scripts",
       "purpose": "Build/utility scripts",
-      "fileCount": 0,
-      "lastAccessed": 1778410378301,
-      "keyFiles": []
+      "fileCount": 1,
+      "lastAccessed": 1778659740864,
+      "keyFiles": [
+        "generate-parsers.sh"
+      ]
     },
     "tests": {
       "path": "tests",
       "purpose": "Test files",
       "fileCount": 0,
-      "lastAccessed": 1778410378301,
+      "lastAccessed": 1778659740864,
       "keyFiles": []
     },
     "docs/api": {
       "path": "docs/api",
       "purpose": "API routes",
       "fileCount": 2,
-      "lastAccessed": 1778410378301,
+      "lastAccessed": 1778659740864,
       "keyFiles": [
         "README.md",
         "openapi.yaml"
       ]
     },
-    "pkg/api": {
-      "path": "pkg/api",
+    "internal/api": {
+      "path": "internal/api",
       "purpose": "API routes",
       "fileCount": 3,
-      "lastAccessed": 1778410378301,
+      "lastAccessed": 1778659740864,
       "keyFiles": [
         "errors.go",
         "server.go",
         "server_test.go"
       ]
     },
-    "pkg/app": {
-      "path": "pkg/app",
+    "internal/app": {
+      "path": "internal/app",
       "purpose": "Application code",
       "fileCount": 2,
-      "lastAccessed": 1778410378301,
+      "lastAccessed": 1778659740864,
       "keyFiles": [
         "app.go",
         "app_test.go"
@@ -154,24 +158,35 @@
       "path": "pkg/config",
       "purpose": "Configuration files",
       "fileCount": 2,
-      "lastAccessed": 1778410378302,
+      "lastAccessed": 1778659740865,
       "keyFiles": [
         "config.go",
         "config_test.go"
+      ]
+    },
+    "pkg/utils": {
+      "path": "pkg/utils",
+      "purpose": "Utility functions",
+      "fileCount": 5,
+      "lastAccessed": 1778659740865,
+      "keyFiles": [
+        "hash.go",
+        "pool.go",
+        "retry.go"
       ]
     }
   },
   "hotPaths": [
     {
       "path": "MEMORY.md",
-      "accessCount": 29,
-      "lastAccessed": 1778423207853,
+      "accessCount": 90,
+      "lastAccessed": 1778814284142,
       "type": "file"
     },
     {
       "path": "docs/design/parser-design.md",
-      "accessCount": 27,
-      "lastAccessed": 1778420105906,
+      "accessCount": 29,
+      "lastAccessed": 1778428887209,
       "type": "file"
     },
     {
@@ -182,8 +197,14 @@
     },
     {
       "path": "pkg/parser/sqlserver/visitor.go",
+      "accessCount": 19,
+      "lastAccessed": 1778428790939,
+      "type": "file"
+    },
+    {
+      "path": "pkg/event/change_event.go",
       "accessCount": 18,
-      "lastAccessed": 1778419405774,
+      "lastAccessed": 1778665652730,
       "type": "file"
     },
     {
@@ -212,26 +233,26 @@
     },
     {
       "path": "pkg/parser/postgres/visitor.go",
-      "accessCount": 14,
-      "lastAccessed": 1778419372800,
+      "accessCount": 15,
+      "lastAccessed": 1778428785272,
       "type": "file"
     },
     {
       "path": "pkg/parser/mysql/visitor.go",
-      "accessCount": 13,
-      "lastAccessed": 1778419345532,
+      "accessCount": 14,
+      "lastAccessed": 1778428778665,
       "type": "file"
     },
     {
       "path": "pkg/parser/oracle/visitor.go",
-      "accessCount": 13,
-      "lastAccessed": 1778419405649,
+      "accessCount": 14,
+      "lastAccessed": 1778428785323,
       "type": "file"
     },
     {
       "path": "pkg/parser/mysql/mysql_parser_test.go",
-      "accessCount": 13,
-      "lastAccessed": 1778419823307,
+      "accessCount": 14,
+      "lastAccessed": 1778428797270,
       "type": "file"
     },
     {
@@ -247,33 +268,45 @@
       "type": "file"
     },
     {
+      "path": "docs/design/implementation-plan.md",
+      "accessCount": 12,
+      "lastAccessed": 1778641728968,
+      "type": "file"
+    },
+    {
+      "path": "pkg/parser/parser.go",
+      "accessCount": 12,
+      "lastAccessed": 1778665652672,
+      "type": "file"
+    },
+    {
+      "path": "docs/design/pipeline-design.md",
+      "accessCount": 12,
+      "lastAccessed": 1778731038923,
+      "type": "file"
+    },
+    {
       "path": "pkg/parser/postgres/postgres_parser.go",
-      "accessCount": 10,
-      "lastAccessed": 1778419372671,
+      "accessCount": 11,
+      "lastAccessed": 1778428785229,
       "type": "file"
     },
     {
       "path": "pkg/parser/oracle/oracle_parser.go",
+      "accessCount": 8,
+      "lastAccessed": 1778428785218,
+      "type": "file"
+    },
+    {
+      "path": "pkg/parser/sqlserver/sqlserver_parser.go",
       "accessCount": 7,
-      "lastAccessed": 1778419405371,
+      "lastAccessed": 1778428790992,
       "type": "file"
     },
     {
       "path": "scripts/generate-parsers.sh",
       "accessCount": 6,
       "lastAccessed": 1778413093894,
-      "type": "file"
-    },
-    {
-      "path": "pkg/parser/parser.go",
-      "accessCount": 6,
-      "lastAccessed": 1778419315994,
-      "type": "file"
-    },
-    {
-      "path": "pkg/parser/sqlserver/sqlserver_parser.go",
-      "accessCount": 6,
-      "lastAccessed": 1778419405502,
       "type": "file"
     },
     {
@@ -289,6 +322,18 @@
       "type": "file"
     },
     {
+      "path": "pkg/parser/parser_test.go",
+      "accessCount": 5,
+      "lastAccessed": 1778428797218,
+      "type": "file"
+    },
+    {
+      "path": "Makefile",
+      "accessCount": 5,
+      "lastAccessed": 1778813704777,
+      "type": "file"
+    },
+    {
       "path": "pkg/parser/postgres/generated/postgresql_lexer.go",
       "accessCount": 4,
       "lastAccessed": 1778411719584,
@@ -301,22 +346,22 @@
       "type": "file"
     },
     {
-      "path": "pkg/parser/parser_test.go",
+      "path": "pkg/parser/noop/noop_parser.go",
       "accessCount": 4,
-      "lastAccessed": 1778419452489,
+      "lastAccessed": 1778428778559,
       "type": "file"
     },
     {
-      "path": "docs/design/implementation-plan.md",
+      "path": "pkg/parser/mysql/mysql_parser.go",
       "accessCount": 4,
-      "lastAccessed": 1778421454508,
+      "lastAccessed": 1778428778610,
       "type": "file"
     },
     {
-      "path": "Makefile",
-      "accessCount": 3,
-      "lastAccessed": 1778412229009,
-      "type": "file"
+      "path": "pkg/parser",
+      "accessCount": 4,
+      "lastAccessed": 1778666309071,
+      "type": "directory"
     },
     {
       "path": "pkg/parser/postgres/generated/postgresqlparser_visitor.go",
@@ -335,30 +380,6 @@
       "accessCount": 3,
       "lastAccessed": 1778417249115,
       "type": "directory"
-    },
-    {
-      "path": "pkg/parser/mysql/mysql_parser.go",
-      "accessCount": 3,
-      "lastAccessed": 1778419334033,
-      "type": "file"
-    },
-    {
-      "path": "pkg/parser/noop/noop_parser.go",
-      "accessCount": 3,
-      "lastAccessed": 1778419417769,
-      "type": "file"
-    },
-    {
-      "path": "docs/design/pipeline-design.md",
-      "accessCount": 3,
-      "lastAccessed": 1778421177052,
-      "type": "file"
-    },
-    {
-      "path": "pkg/event/change_event.go",
-      "accessCount": 3,
-      "lastAccessed": 1778421192540,
-      "type": "file"
     },
     {
       "path": "pkg/parser/postgres/generated/postgresql_lexer_base.go",
@@ -394,12 +415,6 @@
       "path": "pkg/parser/sqlserver/generated/tsqlparser_visitor.go",
       "accessCount": 2,
       "lastAccessed": 1778413913393,
-      "type": "directory"
-    },
-    {
-      "path": "pkg/parser",
-      "accessCount": 2,
-      "lastAccessed": 1778418901659,
       "type": "directory"
     },
     {

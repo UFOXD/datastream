@@ -81,6 +81,9 @@
 | 组件 | 文件 | 说明 |
 |------|------|------|
 | BackpressureController | backpressure.go | 背压控制器 |
+| PersistentBuffer | persistent_buffer.go | 持久化缓冲器（Badger后端） |
+| MemoryBuffer | buffer.go | 内存缓冲器 |
+| BatchBuffer | buffer.go | 批量缓冲器 |
 
 **BackpressureController 配置**:
 - `HighWatermark`: 触发暂停的队列使用率阈值 (默认80%)
@@ -119,6 +122,12 @@
 |------|------|------|
 | SnapshotCoordinator | snapshot_coordinator.go | 快照协调器 |
 | SnapshotConcurrencyConfig | snapshot_config.go | 快照并发配置 |
+| matchPattern | binlog_syncer.go | 通配符模式匹配（支持 * 和 ?） |
+
+**matchPattern 通配符支持**:
+- `*` - 匹配任意字符序列（包括空）
+- `?` - 匹配单个字符
+- 示例: `table*` 匹配 `table1`, `table_name`; `*_suffix` 匹配 `abc_suffix`
 
 ---
 
@@ -240,6 +249,24 @@ func (b *BackpressureController) OnResume(fn func())
 
 // 配置
 func DefaultBackpressureConfig() *BackpressureConfig
+
+// PersistentBuffer 持久化缓冲器
+func NewPersistentBuffer(config *PersistentBufferConfig) (*PersistentBuffer, error)
+func (b *PersistentBuffer) Put(ctx context.Context, e *event.ChangeEvent) error
+func (b *PersistentBuffer) Get(ctx context.Context, batchSize int) ([]*event.ChangeEvent, error)
+func (b *PersistentBuffer) Flush(ctx context.Context) error
+func (b *PersistentBuffer) Close() error
+func (b *PersistentBuffer) Replay(ctx context.Context) (int, error)
+func (b *PersistentBuffer) Clear() error
+func (b *PersistentBuffer) Stats() (*PersistentBufferStats, error)
+
+// 配置
+type PersistentBufferConfig struct {
+    Capacity      int           // 内存缓冲容量
+    Path          string        // Badger数据库路径
+    SyncWrites    bool          // 同步写入
+    FlushInterval time.Duration // 刷新间隔
+}
 ```
 
 ### internal/ratelimit

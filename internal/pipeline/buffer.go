@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"github.com/UFOXD/datastream/pkg/event"
-	"github.com/pingcap/log"
-	"go.uber.org/zap"
 )
 
 // Buffer is the interface for event buffering.
@@ -219,25 +217,3 @@ func NewBuffer(config BufferConfig) Buffer {
 	return NewMemoryBuffer(config.Size)
 }
 
-// PersistentBuffer is a buffer with persistence support.
-// TODO: Implement with badger/boltdb backend
-type PersistentBuffer struct {
-	*MemoryBuffer
-	path string
-}
-
-// NewPersistentBuffer creates a new persistent buffer.
-func NewPersistentBuffer(capacity int, path string) *PersistentBuffer {
-	log.Info("creating persistent buffer", zap.String("path", path))
-	return &PersistentBuffer{
-		MemoryBuffer: NewMemoryBuffer(capacity),
-		path:         path,
-	}
-}
-
-// Close closes the persistent buffer.
-func (b *PersistentBuffer) Close() error {
-	// TODO: Persist pending events
-	log.Info("closing persistent buffer", zap.String("path", b.path))
-	return b.MemoryBuffer.Close()
-}

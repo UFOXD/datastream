@@ -632,11 +632,56 @@ func isDDL(query string) bool {
 		strings.HasPrefix(upper, "RENAME ")
 }
 
-// matchPattern performs simple pattern matching.
+// matchPattern performs pattern matching with wildcards.
+// Supports:
+//   - * matches any sequence of characters
+//   - ? matches any single character
+//   - literal characters match themselves
 func matchPattern(pattern, s string) bool {
 	if pattern == "*" {
 		return true
 	}
-	// TODO: Implement proper pattern matching with wildcards
-	return pattern == s
+
+	// Use simple wildcard matching algorithm
+	return wildcardMatch(pattern, s)
+}
+
+// wildcardMatch implements * and ? wildcard matching.
+func wildcardMatch(pattern, s string) bool {
+	pLen, sLen := len(pattern), len(s)
+
+	// dp[i][j] = true if pattern[0:i] matches s[0:j]
+	dp := make([][]bool, pLen+1)
+	for i := range dp {
+		dp[i] = make([]bool, sLen+1)
+	}
+
+	// Empty pattern matches empty string
+	dp[0][0] = true
+
+	// Pattern with only * can match empty string
+	for i := 1; i <= pLen; i++ {
+		if pattern[i-1] == '*' {
+			dp[i][0] = dp[i-1][0]
+		}
+	}
+
+	// Fill the DP table
+	for i := 1; i <= pLen; i++ {
+		for j := 1; j <= sLen; j++ {
+			switch pattern[i-1] {
+			case '*':
+				// * matches zero or more characters
+				dp[i][j] = dp[i-1][j] || dp[i][j-1]
+			case '?':
+				// ? matches exactly one character
+				dp[i][j] = dp[i-1][j-1]
+			default:
+				// Exact character match
+				dp[i][j] = dp[i-1][j-1] && pattern[i-1] == s[j-1]
+			}
+		}
+	}
+
+	return dp[pLen][sLen]
 }

@@ -357,6 +357,97 @@ datastream/
 
 ---
 
+## Phase 8.5: 技术债务修复（待办）
+
+**背景**：Phase 8 实施过程中发现多处偏离设计文档的实现，需要重构以符合设计规范。
+
+### 问题清单
+
+| 问题 | 设计要求 | 当前实现 | 优先级 |
+|------|---------|---------|--------|
+| MySQL/MariaDB Source 使用 canal | 使用 `replication` + 自己的位点/schema 管理 | 使用 `canal.Canal` 封装 | **高** |
+| DDL 未使用 Parser | Source 调用 `parser.Parse()` 解析 DDL | DDL 作为原始字符串传递 | **高** |
+| Schema 管理未独立 | Connector 自己管理 `TableSchemaCache` | 依赖 canal 的 schema 包 | 中 |
+| 位点管理未独立 | 使用 `internal/offset` 模块 | canal 内部位点管理 | 中 |
+
+### 重构任务
+
+#### 任务 1: 移除 canal 依赖，使用 replication 包
+
+**目标**：MySQL/MariaDB Source 只使用 `go-mysql/replication` 底层包
+
+**改动**：
+```
+internal/source/mysql/connector.go
+internal/source/mariadb/connector.go
+
+变更:
+- 移除 canal.Canal
+- 使用 replication.BinlogSyncer + replication.BinlogStreamer
+- 自己实现连接管理和重连逻辑
+```
+
+**新增依赖**：
+- `github.com/go-mysql-org/go-mysql/replication` (底层 binlog 协议)
+
+#### 任务 2: 集成 DDL Parser
+
+**目标**：Source Connector 收到 DDL 时调用 Parser 解析
+
+**改动**：
+```go
+// OnDDL 收到 DDL 事件时
+func (h *BinlogHandler) OnDDL(...) error {
+    // 获取 Parser
+    p := parser.DefaultRegistry.Get("mysql")
+
+    // 解析 DDL
+    results, err := p.Parse(ctx, query)
+    if err != nil {
+        return err
+    }
+
+    // 构建结构化 ChangeEvent
+    for _, result := range results {
+        event := &event.ChangeEvent{
+            Type:         event.EventTypeDDL,
+            DDLResult:    result,  // 新增字段
+            // ...
+        }
+        h.connector.events <- event
+    }
+}
+```
+
+#### 任务 3: 独立 Schema 管理
+
+**目标**：Connector 使用自己的 `TableSchemaCache`，查询 `INFORMATION_SCHEMA`
+
+**改动**：
+- 新增 `internal/source/schema_cache.go`
+- 查询 `INFORMATION_SCHEMA.COLUMNS`, `INFORMATION_SCHEMA.TABLES`
+- DDL 变更时更新缓存
+
+#### 任务 4: 统一位点管理
+
+**目标**：所有 Source 使用 `internal/offset` 模块
+
+**现状**：已部分实现，需要确保与 replication 包集成
+
+### 预计工期
+
+| 任务 | 工期 |
+|------|------|
+| 移除 canal，使用 replication | 3 天 |
+| 集成 DDL Parser | 2 天 |
+| 独立 Schema 管理 | 2 天 |
+| 统一位点管理 | 1 天 |
+| 测试验证 | 2 天 |
+
+**总计：约 2 周**
+
+---
+
 ## 后续阶段（可选）
 
 ### Phase 5: 高级特性
