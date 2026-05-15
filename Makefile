@@ -59,3 +59,34 @@ generate-parsers:
 
 .PHONY: all
 all: deps build test
+
+# Integration tests
+.PHONY: test-integration-up test-integration-down test-integration test-integration-mysql test-integration-postgres test-integration-sqlserver test-integration-oracle
+
+test-integration-up:
+	docker-compose -f tests/docker/docker-compose.yml up -d
+	@echo "Waiting for databases to be ready..."
+	@sleep 10
+
+test-integration-down:
+	docker-compose -f tests/docker/docker-compose.yml down -v
+
+test-integration: test-integration-up
+	go test -v -tags=integration -timeout 10m ./tests/integration/...
+	$(MAKE) test-integration-down
+
+test-integration-mysql: test-integration-up
+	go test -v -tags=integration -timeout 5m ./tests/integration/... -run MySQL
+	$(MAKE) test-integration-down
+
+test-integration-postgres: test-integration-up
+	go test -v -tags=integration -timeout 5m ./tests/integration/... -run Postgres
+	$(MAKE) test-integration-down
+
+test-integration-sqlserver: test-integration-up
+	go test -v -tags=integration -timeout 5m ./tests/integration/... -run SQLServer
+	$(MAKE) test-integration-down
+
+test-integration-oracle: test-integration-up
+	go test -v -tags=integration -timeout 5m ./tests/integration/... -run Oracle
+	$(MAKE) test-integration-down
