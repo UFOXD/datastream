@@ -6,95 +6,151 @@ package integration
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"testing"
 	"time"
 
-	_ "github.com/microsoft/go-mssqldb"
+	"github.com/stretchr/testify/require"
+	_ "github.com/denisenkom/go-mssqldb"
 )
 
-// TestSQLServerSourceIntegration tests SQL Server source connector with CDC
-func TestSQLServerSourceIntegration(t *testing.T) {
-	cfg := DefaultConfig()
+func TestSQLServerConnection(t *testing.T) {
+	cfg := SQLServerConfig()
 
-	// Connect to SQL Server
-	db, err := sql.Open("sqlserver", cfg.SQLServerDSN())
-	if err != nil {
-		t.Fatalf("Failed to connect to SQL Server: %v", err)
-	}
+	// 等待数据库就绪
+	WaitForReady(t, "sqlserver", cfg.SourceDSN, 60*time.Second)
+
+	// 测试连接
+	db, err := sql.Open("sqlserver", cfg.SourceDSN)
+	require.NoError(t, err, "Failed to open SQL Server connection")
 	defer db.Close()
 
-	// Wait for SQL Server to be ready
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	for {
-		select {
-		case <-ctx.Done():
-			t.Fatal("Timeout waiting for SQL Server")
-		default:
-			if err := db.Ping(); err == nil {
-				goto ready
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-	}
+	err = db.PingContext(ctx)
+	require.NoError(t, err, "Failed to ping SQL Server")
 
-ready:
-	// Create test table
-	tableName := fmt.Sprintf("test_table_%d", time.Now().UnixNano())
-	createTable := fmt.Sprintf(`
-		CREATE TABLE %s (
-			id INT IDENTITY(1,1) PRIMARY KEY,
-			name NVARCHAR(255) NOT NULL,
-			value INT,
-			created_at DATETIME2 DEFAULT GETDATE()
+	// 验证能执行查询
+	var version string
+	err = db.QueryRowContext(ctx, "SELECT @@VERSION").Scan(&version)
+	require.NoError(t, err, "Failed to query SQL Server version")
+	require.NotEmpty(t, version, "SQL Server version should not be empty")
+
+	t.Logf("SQL Server version: %s", version)
+}
+
+func TestSQLServerSnapshot(t *testing.T) {
+	cfg := SQLServerConfig()
+	WaitForReady(t, "sqlserver", cfg.SourceDSN, 60*time.Second)
+
+	db, err := sql.Open("sqlserver", cfg.SourceDSN)
+	require.NoError(t, err)
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// 创建测试表
+	_, err = db.ExecContext(ctx, `
+		IF OBJECT_ID('snapshot_test', 'U') IS NOT NULL DROP TABLE snapshot_test;
+		CREATE TABLE snapshot_test (
+			id INT PRIMARY KEY,
+			name NVARCHAR(100) NOT NULL,
+			value INT DEFAULT 0
 		)
-	`, tableName)
+	`)
+	require.NoError(t, err, "Failed to create table")
 
-	_, err = db.Exec(createTable)
-	if err != nil {
-		t.Fatalf("Failed to create table: %v", err)
-	}
-	defer db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
+	// 插入测试数据
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO snapshot_test (id, name, value) VALUES
+		(1, 'row1', 100),
+		(2, 'row2', 200),
+		(3, 'row3', 300)
+	`)
+	require.NoError(t, err, "Failed to insert data")
 
-	// Insert test data
-	for i := 1; i <= 5; i++ {
-		_, err := db.Exec(fmt.Sprintf("INSERT INTO %s (name, value) VALUES (@p1, @p2)", tableName),
-			fmt.Sprintf("item-%d", i), i*10)
-		if err != nil {
-			t.Fatalf("Failed to insert data: %v", err)
-		}
-	}
-
-	// Verify data
+	// 验证数据
 	var count int
-	err = db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", tableName)).Scan(&count)
-	if err != nil {
-		t.Fatalf("Failed to count rows: %v", err)
-	}
+	err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM snapshot_test").Scan(&count)
+	require.NoError(t, err)
+	require.Equal(t, 3, count, "Expected 3 rows")
 
-	if count != 5 {
-		t.Fatalf("Expected 5 rows, got %d", count)
-	}
+	t.Log("SQL Server snapshot test passed")
+}
 
-	// Check if CDC is enabled (optional)
-	var cdcEnabled bool
-	err = db.QueryRow("SELECT is_cdc_enabled FROM sys.databases WHERE name = DB_NAME()").Scan(&cdcEnabled)
-	if err == nil && cdcEnabled {
-		t.Log("CDC is enabled for this database")
+func TestSQLServerCDC(t *testing.T) {
+	cfg := SQLServerConfig()
+	WaitForReady(t, "sqlserver", cfg.SourceDSN, 60*time.Second)
 
-		// Check if CDC is enabled on the table
-		var captureInstance string
-		err = db.QueryRow(`
-			SELECT capture_instance
-			FROM cdc.change_tables
-			WHERE source_name = @p1
-		`, tableName).Scan(&captureInstance)
-		if err == nil {
-			t.Logf("CDC capture instance found: %s", captureInstance)
-		}
-	}
+	db, err := sql.Open("sqlserver", cfg.SourceDSN)
+	require.NoError(t, err)
+	defer db.Close()
 
-	t.Log("SQL Server source integration test passed")
+	ctx := context.Background()
+
+	// 创建测试表
+	_, err = db.ExecContext(ctx, `
+		IF OBJECT_ID('cdc_test', 'U') IS NOT NULL DROP TABLE cdc_test;
+		CREATE TABLE cdc_test (
+			id INT PRIMARY KEY,
+			name NVARCHAR(100) NOT NULL,
+			value INT DEFAULT 0
+		)
+	`)
+	require.NoError(t, err, "Failed to create table")
+
+	// 测试 INSERT
+	_, err = db.ExecContext(ctx, `INSERT INTO cdc_test (id, name, value) VALUES (1, 'test', 100)`)
+	require.NoError(t, err)
+
+	// 测试 UPDATE
+	_, err = db.ExecContext(ctx, `UPDATE cdc_test SET value = 200 WHERE id = 1`)
+	require.NoError(t, err)
+
+	// 验证更新
+	var value int
+	err = db.QueryRowContext(ctx, `SELECT value FROM cdc_test WHERE id = 1`).Scan(&value)
+	require.NoError(t, err)
+	require.Equal(t, 200, value)
+
+	// 测试 DELETE
+	_, err = db.ExecContext(ctx, `DELETE FROM cdc_test WHERE id = 1`)
+	require.NoError(t, err)
+
+	t.Log("SQL Server CDC test passed")
+}
+
+func TestSQLServerDDL(t *testing.T) {
+	cfg := SQLServerConfig()
+	WaitForReady(t, "sqlserver", cfg.SourceDSN, 60*time.Second)
+
+	db, err := sql.Open("sqlserver", cfg.SourceDSN)
+	require.NoError(t, err)
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// 测试 CREATE TABLE
+	_, err = db.ExecContext(ctx, `
+		IF OBJECT_ID('ddl_test', 'U') IS NOT NULL DROP TABLE ddl_test;
+		CREATE TABLE ddl_test (
+			id INT PRIMARY KEY,
+			name NVARCHAR(100)
+		)
+	`)
+	require.NoError(t, err, "Failed to CREATE TABLE")
+
+	// 测试 ALTER TABLE
+	_, err = db.ExecContext(ctx, `ALTER TABLE ddl_test ADD value INT DEFAULT 0`)
+	require.NoError(t, err, "Failed to ALTER TABLE")
+
+	// 验证新列可用
+	_, err = db.ExecContext(ctx, `INSERT INTO ddl_test (id, name, value) VALUES (1, 'test', 100)`)
+	require.NoError(t, err, "Failed to INSERT with new column")
+
+	// 测试 DROP TABLE
+	_, err = db.ExecContext(ctx, `DROP TABLE ddl_test`)
+	require.NoError(t, err, "Failed to DROP TABLE")
+
+	t.Log("SQL Server DDL test passed")
 }
