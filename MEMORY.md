@@ -469,7 +469,7 @@ go build ./... && go test ./...
 
 | 任务 | 说明 | 状态 |
 |------|------|------|
-| 数据库兼容性测试 | MySQL/PostgreSQL/MongoDB 端到端集成测试 | ⏳ 待开始 |
+| 数据库兼容性测试 | MySQL/PostgreSQL/SQL Server/Oracle 集成测试 | ✅ 已完成 |
 | 性能基准测试 | 各连接器的吞吐量和延迟基准 | ⏳ 待开始 |
 | 监控指标集成 | Prometheus metrics 端点暴露 | ⏳ 待开始 |
 
@@ -566,5 +566,67 @@ datastream-ctl tables get mydb.users
 # 暂停/恢复表同步
 datastream-ctl tables pause mydb.users
 datastream-ctl tables resume mydb.users
+```
+
+---
+
+## 2026-05-15 数据库兼容性集成测试
+
+### 完成的任务
+
+| 任务 | 状态 |
+|------|------|
+| Docker Compose 配置 | ✅ 完成 |
+| 测试辅助函数 | ✅ 完成 |
+| MySQL 集成测试 | ✅ 完成 |
+| PostgreSQL 集成测试 | ✅ 完成 |
+| SQL Server 集成测试 | ✅ 完成 |
+| Oracle 集成测试 | ✅ 完成 |
+| Makefile 集成测试命令 | ✅ 完成 |
+| 测试依赖添加 | ✅ 完成 |
+
+### 新增文件
+
+| 文件路径 | 说明 |
+|---------|------|
+| `tests/docker/docker-compose.yml` | 数据库容器配置 |
+| `tests/docker/mysql/init.sql` | MySQL 初始化脚本 |
+| `tests/docker/postgres/init.sql` | PostgreSQL 初始化脚本 |
+| `tests/docker/sqlserver/init.sql` | SQL Server 初始化脚本 |
+| `tests/docker/oracle/init.sql` | Oracle 初始化脚本 |
+| `tests/integration/integration_test.go` | 测试辅助函数 |
+| `tests/integration/mysql_test.go` | MySQL 集成测试 |
+| `tests/integration/postgres_test.go` | PostgreSQL 集成测试 |
+| `tests/integration/sqlserver_test.go` | SQL Server 集成测试 |
+| `tests/integration/oracle_test.go` | Oracle 集成测试 |
+
+### Git Commits
+
+| Commit | Description |
+|--------|-------------|
+| `eeb3f47` | feat(test): add docker-compose for integration test databases |
+| `31183d5` | feat(test): add integration test helpers |
+| `47ccf86` | feat(test): add MySQL integration tests |
+| `b159412` | feat(test): add PostgreSQL integration tests |
+| `ad00303` | feat(test): add SQL Server integration tests |
+| `bf6419b` | feat(test): add Oracle integration tests |
+| `664425a` | feat(test): add integration test Makefile targets |
+| `c583432` | feat(test): add integration test dependencies |
+
+### 运行方式
+
+```bash
+# 启动数据库容器并运行所有集成测试
+make test-integration
+
+# 运行单个数据库测试
+make test-integration-mysql
+make test-integration-postgres
+make test-integration-sqlserver
+make test-integration-oracle
+
+# 手动管理容器
+make test-integration-up    # 启动
+make test-integration-down  # 停止
 ```
 
