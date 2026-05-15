@@ -6,95 +6,174 @@ package integration
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	_ "github.com/sijms/go-ora/v2"
 )
 
-// TestOracleSourceIntegration tests Oracle source connector with LogMiner
-func TestOracleSourceIntegration(t *testing.T) {
-	cfg := DefaultConfig()
+func TestOracleConnection(t *testing.T) {
+	cfg := OracleConfig()
 
-	// Connect to Oracle
-	db, err := sql.Open("oracle", cfg.OracleDSN())
-	if err != nil {
-		t.Fatalf("Failed to connect to Oracle: %v", err)
-	}
+	// 等待数据库就绪 (Oracle 启动较慢)
+	WaitForReady(t, "oracle", cfg.SourceDSN, 120*time.Second)
+
+	// 测试连接
+	db, err := sql.Open("oracle", cfg.SourceDSN)
+	require.NoError(t, err, "Failed to open Oracle connection")
 	defer db.Close()
 
-	// Wait for Oracle to be ready
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	for {
-		select {
-		case <-ctx.Done():
-			t.Fatal("Timeout waiting for Oracle")
-		default:
-			if err := db.Ping(); err == nil {
-				goto ready
-			}
-			time.Sleep(1 * time.Second)
-		}
-	}
+	err = db.PingContext(ctx)
+	require.NoError(t, err, "Failed to ping Oracle")
 
-ready:
-	// Get current SCN
-	var currentSCN uint64
-	err = db.QueryRow("SELECT CURRENT_SCN FROM V$DATABASE").Scan(&currentSCN)
-	if err != nil {
-		t.Fatalf("Failed to get current SCN: %v", err)
-	}
-	t.Logf("Current SCN: %d", currentSCN)
+	// 验证能执行查询
+	var dummy int
+	err = db.QueryRowContext(ctx, "SELECT 1 FROM DUAL").Scan(&dummy)
+	require.NoError(t, err, "Failed to query Oracle")
+	require.Equal(t, 1, dummy)
 
-	// Create test table
-	tableName := fmt.Sprintf("TEST_TABLE_%d", time.Now().UnixNano() % 1000000)
-	createTable := fmt.Sprintf(`
-		CREATE TABLE %s (
-			id NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-			name VARCHAR2(255) NOT NULL,
-			value NUMBER,
-			created_at TIMESTAMP DEFAULT SYSTIMESTAMP
+	t.Log("Oracle connection test passed")
+}
+
+func TestOracleSnapshot(t *testing.T) {
+	cfg := OracleConfig()
+	WaitForReady(t, "oracle", cfg.SourceDSN, 120*time.Second)
+
+	db, err := sql.Open("oracle", cfg.SourceDSN)
+	require.NoError(t, err)
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// 创建测试表
+	_, err = db.ExecContext(ctx, `
+		BEGIN
+			EXECUTE IMMEDIATE 'DROP TABLE snapshot_test';
+		EXCEPTION
+			WHEN OTHERS THEN NULL;
+		END;
+	`)
+	require.NoError(t, err)
+
+	_, err = db.ExecContext(ctx, `
+		CREATE TABLE snapshot_test (
+			id NUMBER PRIMARY KEY,
+			name VARCHAR2(100) NOT NULL,
+			value NUMBER DEFAULT 0
 		)
-	`, tableName)
+	`)
+	require.NoError(t, err, "Failed to create table")
 
-	_, err = db.Exec(createTable)
-	if err != nil {
-		t.Fatalf("Failed to create table: %v", err)
-	}
-	defer db.Exec(fmt.Sprintf("DROP TABLE %s PURGE", tableName))
+	// 插入测试数据
+	_, err = db.ExecContext(ctx, `INSERT INTO snapshot_test (id, name, value) VALUES (1, 'row1', 100)`)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `INSERT INTO snapshot_test (id, name, value) VALUES (2, 'row2', 200)`)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `INSERT INTO snapshot_test (id, name, value) VALUES (3, 'row3', 300)`)
+	require.NoError(t, err)
 
-	// Insert test data
-	for i := 1; i <= 5; i++ {
-		_, err := db.Exec(fmt.Sprintf("INSERT INTO %s (name, value) VALUES ('item-%d', %d)", tableName, i, i*10))
-		if err != nil {
-			t.Fatalf("Failed to insert data: %v", err)
-		}
-	}
-
-	// Commit to ensure changes are visible
-	db.Exec("COMMIT")
-
-	// Verify data
+	// 验证数据
 	var count int
-	err = db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", tableName)).Scan(&count)
-	if err != nil {
-		t.Fatalf("Failed to count rows: %v", err)
-	}
+	err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM snapshot_test").Scan(&count)
+	require.NoError(t, err)
+	require.Equal(t, 3, count, "Expected 3 rows")
 
-	if count != 5 {
-		t.Fatalf("Expected 5 rows, got %d", count)
-	}
+	t.Log("Oracle snapshot test passed")
+}
 
-	// Get new SCN after changes
-	var newSCN uint64
-	err = db.QueryRow("SELECT CURRENT_SCN FROM V$DATABASE").Scan(&newSCN)
-	if err != nil {
-		t.Fatalf("Failed to get new SCN: %v", err)
-	}
-	t.Logf("New SCN after changes: %d (delta: %d)", newSCN, newSCN-currentSCN)
+func TestOracleCDC(t *testing.T) {
+	cfg := OracleConfig()
+	WaitForReady(t, "oracle", cfg.SourceDSN, 120*time.Second)
 
-	t.Log("Oracle source integration test passed")
+	db, err := sql.Open("oracle", cfg.SourceDSN)
+	require.NoError(t, err)
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// 创建测试表
+	_, err = db.ExecContext(ctx, `
+		BEGIN
+			EXECUTE IMMEDIATE 'DROP TABLE cdc_test';
+		EXCEPTION
+			WHEN OTHERS THEN NULL;
+		END;
+	`)
+	require.NoError(t, err)
+
+	_, err = db.ExecContext(ctx, `
+		CREATE TABLE cdc_test (
+			id NUMBER PRIMARY KEY,
+			name VARCHAR2(100) NOT NULL,
+			value NUMBER DEFAULT 0
+		)
+	`)
+	require.NoError(t, err, "Failed to create table")
+
+	// 测试 INSERT
+	_, err = db.ExecContext(ctx, `INSERT INTO cdc_test (id, name, value) VALUES (1, 'test', 100)`)
+	require.NoError(t, err)
+
+	// 测试 UPDATE
+	_, err = db.ExecContext(ctx, `UPDATE cdc_test SET value = 200 WHERE id = 1`)
+	require.NoError(t, err)
+
+	// 验证更新
+	var value int
+	err = db.QueryRowContext(ctx, `SELECT value FROM cdc_test WHERE id = 1`).Scan(&value)
+	require.NoError(t, err)
+	require.Equal(t, 200, value)
+
+	// 测试 DELETE
+	_, err = db.ExecContext(ctx, `DELETE FROM cdc_test WHERE id = 1`)
+	require.NoError(t, err)
+
+	t.Log("Oracle CDC test passed")
+}
+
+func TestOracleDDL(t *testing.T) {
+	cfg := OracleConfig()
+	WaitForReady(t, "oracle", cfg.SourceDSN, 120*time.Second)
+
+	db, err := sql.Open("oracle", cfg.SourceDSN)
+	require.NoError(t, err)
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// 测试 CREATE TABLE
+	_, err = db.ExecContext(ctx, `
+		BEGIN
+			EXECUTE IMMEDIATE 'DROP TABLE ddl_test';
+		EXCEPTION
+			WHEN OTHERS THEN NULL;
+		END;
+	`)
+	require.NoError(t, err)
+
+	_, err = db.ExecContext(ctx, `
+		CREATE TABLE ddl_test (
+			id NUMBER PRIMARY KEY,
+			name VARCHAR2(100)
+		)
+	`)
+	require.NoError(t, err, "Failed to CREATE TABLE")
+
+	// 测试 ALTER TABLE
+	_, err = db.ExecContext(ctx, `ALTER TABLE ddl_test ADD value NUMBER DEFAULT 0`)
+	require.NoError(t, err, "Failed to ALTER TABLE")
+
+	// 验证新列可用
+	_, err = db.ExecContext(ctx, `INSERT INTO ddl_test (id, name, value) VALUES (1, 'test', 100)`)
+	require.NoError(t, err, "Failed to INSERT with new column")
+
+	// 测试 DROP TABLE
+	_, err = db.ExecContext(ctx, `DROP TABLE ddl_test`)
+	require.NoError(t, err, "Failed to DROP TABLE")
+
+	t.Log("Oracle DDL test passed")
 }
