@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: datastream-mysql-test
+    ports:
+      - "13306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: testpass
+      MYSQL_DATABASE: testdb
+    volumes:
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    command: --binlog-format=ROW --log-bin=mysql-bin --server-id=1
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres:
+    image: postgres:15
+    container_name: datastream-postgres-test
+    ports:
+      - "15432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: testpass
+      POSTGRES_DB: testdb
+    volumes:
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: datastream-sqlserver-test
+    ports:
+      - "11433:1433"
+    environment:
+      ACCEPT_EULA: Y
+      SA_PASSWORD: "TestPass123!"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P 'TestPass123!' -Q 'SELECT 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  oracle:
+    image: gvenzl/oracle-xe:21c
+    container_name: datastream-oracle-test
+    ports:
+      - "11521:1521"
+    environment:
+      ORACLE_PASSWORD: testpass
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'SELECT 1 FROM DUAL;' | sqlplus -s system/testpass@localhost:1521/XEPDB1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10

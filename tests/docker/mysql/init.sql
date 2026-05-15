@@ -1,0 +1,11 @@
+CREATE DATABASE IF NOT EXISTS testdb;
+USE testdb;
+
+CREATE TABLE IF NOT EXISTS test_table (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    name VARCHAR(100) NOT NULL,
+    value INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO test_table (name, value) VALUES ('test1', 100), ('test2', 200);
