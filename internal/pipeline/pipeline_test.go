@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/UFOXD/datastream/pkg/event"
+	"github.com/UFOXD/datastream/pkg/metrics"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 func TestMemoryBuffer(t *testing.T) {
@@ -374,3 +376,59 @@ func TestPipelineStatistics(t *testing.T) {
 		t.Errorf("Expected 2 events failed, got %d", stats.EventsFailed)
 	}
 }
+
+// getGaugeValue is a test helper to extract a labeled gauge value.
+func getGaugeValue(t *testing.T, r *prometheus.Registry, name string, labels map[string]string) float64 {
+	t.Helper()
+	families, _ := r.Gather()
+	for _, f := range families {
+		if f.GetName() != name {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			match := true
+			for _, lp := range m.GetLabel() {
+				if v, ok := labels[lp.GetName()]; ok && v != lp.GetValue() {
+					match = false
+					break
+				}
+			}
+			if match && m.GetGauge() != nil {
+				return m.GetGauge().GetValue()
+			}
+		}
+	}
+	return -1
+}
+
+func TestPipeline_StateMachine_NoPanic(t *testing.T) {
+	metrics.ResetForTest()
+	r := prometheus.NewRegistry()
+	metrics.MustRegisterAll(r)
+	t.Cleanup(func() {
+		metrics.ResetForTest()
+		metrics.MustRegisterAll(prometheus.DefaultRegisterer)
+	})
+
+	cfg := &Config{ID: "t1", Name: "test"}
+	p := New(cfg)
+	p.SetCluster("c1")
+
+	p.updateState("running")
+	p.updateState("paused")
+	p.updateState("stopped")
+
+	val := getGaugeValue(t, r, "datastream_task_state", map[string]string{
+		"cluster": "c1", "task": "t1", "state": "stopped",
+	})
+	if val != 1 {
+		t.Errorf("task_state{stopped} = %v, want 1", val)
+	}
+	val = getGaugeValue(t, r, "datastream_task_state", map[string]string{
+		"cluster": "c1", "task": "t1", "state": "running",
+	})
+	if val != 0 {
+		t.Errorf("task_state{running} = %v, want 0", val)
+	}
+}
+

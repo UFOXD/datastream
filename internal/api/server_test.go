@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/UFOXD/datastream/internal/pipeline"
+	"github.com/UFOXD/datastream/pkg/metrics"
 )
 
 func TestNewServer(t *testing.T) {
@@ -195,4 +197,38 @@ func TestRoutesSetup(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("Expected status 200, got %d", rec.Code)
 	}
+}
+
+func TestMetricsEndpoint_ReturnsPrometheusFormat(t *testing.T) {
+	// promhttp.Handler() uses prometheus.DefaultGatherer. We exercise the
+	// real endpoint by writing into the default registry directly, then
+	// rely on the running test process's pre-registered metrics.
+	metrics.TaskTotal.WithLabelValues("test_endpoint", "running").Set(1)
+
+	s := NewServer(DefaultServerConfig())
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "datastream_task_total") {
+		t.Errorf("body missing datastream_task_total; got first 500 chars: %s", body[:min(500, len(body))])
+	}
+	if !strings.Contains(body, "# HELP") {
+		t.Errorf("body missing # HELP line (not real Prometheus output)")
+	}
+	// Ensure old dummy string is gone
+	if strings.Contains(body, "# DataStream Metrics") && !strings.Contains(body, "# HELP") {
+		t.Errorf("body still contains old dummy '# DataStream Metrics' without # HELP — handler not wired")
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

@@ -217,3 +217,46 @@ func TestHeartbeatEvent(t *testing.T) {
 		t.Errorf("Expected type %s, got %s", EventTypeHeartbeat, event.Type)
 	}
 }
+
+func TestChangeEvent_Size_Nil(t *testing.T) {
+	var e *ChangeEvent
+	if got := e.Size(); got != 0 {
+		t.Errorf("nil ChangeEvent size = %d, want 0", got)
+	}
+}
+
+func TestChangeEvent_Size_Empty(t *testing.T) {
+	e := &ChangeEvent{}
+	if got := e.Size(); got <= 0 {
+		t.Errorf("empty ChangeEvent size = %d, want > 0 (fixed overhead)", got)
+	}
+}
+
+func TestChangeEvent_Size_WithFields(t *testing.T) {
+	e := &ChangeEvent{
+		Source: SourceInfo{Database: "db1"},
+		Table:  TableInfo{Database: "db1", Table: "users"},
+		After: RowData{Fields: map[string]Field{
+			"id":   {Name: "id", Value: int64(42)},
+			"name": {Name: "name", Value: "alice"},
+		}},
+	}
+	got := e.Size()
+	want := 3 + 3 + 5 + 64 + 2 + 16 + 4 + 5
+	if got < want {
+		t.Errorf("Size() = %d, want >= %d", got, want)
+	}
+}
+
+func TestChangeEvent_Size_StringAndBytes(t *testing.T) {
+	e := &ChangeEvent{
+		After: RowData{Fields: map[string]Field{
+			"s": {Name: "s", Value: "hello"},
+			"b": {Name: "b", Value: []byte("world!!")},
+		}},
+	}
+	got := e.Size()
+	if got < 64+1+5+1+7 {
+		t.Errorf("Size() = %d, want larger", got)
+	}
+}

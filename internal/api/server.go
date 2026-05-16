@@ -12,6 +12,7 @@ import (
 	"github.com/UFOXD/datastream/internal/source"
 	"github.com/gorilla/mux"
 	"github.com/pingcap/log"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 )
 
@@ -368,12 +369,7 @@ func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
 
 // handleMetrics returns the Prometheus metrics handler.
 func (s *Server) handleMetrics() http.Handler {
-	// Return Prometheus handler
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Metrics would be served here
-		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte("# DataStream Metrics\n"))
-	})
+	return promhttp.Handler()
 }
 
 // writeJSON writes a JSON response.

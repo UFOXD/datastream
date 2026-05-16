@@ -83,8 +83,8 @@ func TestTaskTotalLabels(t *testing.T) {
 }
 
 func TestTaskEventsTotalLabels(t *testing.T) {
-	// Test that we can use TaskEventsTotal with labels
-	counter := TaskEventsTotal.WithLabelValues("default", "task-1", "insert")
+	// Test that we can use TaskEventsTotal with labels (cluster, task, type, result).
+	counter := TaskEventsTotal.WithLabelValues("default", "task-1", "insert", "success")
 	if counter == nil {
 		t.Error("expected non-nil counter")
 	}

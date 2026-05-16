@@ -11,6 +11,7 @@ import (
 	"github.com/UFOXD/datastream/internal/sink"
 	"github.com/UFOXD/datastream/internal/source"
 	"github.com/pingcap/log"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 )
 
@@ -18,6 +19,7 @@ import (
 type Pipeline struct {
 	id          string
 	name        string
+	cluster     string
 	source      source.Connector
 	sinks       []sink.Connector
 	dispatcher  Dispatcher
@@ -28,7 +30,22 @@ type Pipeline struct {
 	mu          sync.RWMutex
 	stopCh      chan struct{}
 	wg          sync.WaitGroup
+
+	// Pre-cached metric label vectors filled by precacheLabels (Stage 3).
+	// Stage 1 leaves them nil; Stage 3 wires them in.
+	successCounters map[event.EventType]prometheus.Counter
+	bytesAdder      prometheus.Counter
+	lagGauge        prometheus.Gauge
+	lastEventGauge  prometheus.Gauge
 }
+
+// Pipeline state machine constants for metric labeling.
+const (
+	stateRunning = "running"
+	stateStopped = "stopped"
+	statePaused  = "paused"
+	stateError   = "error"
+)
 
 // Config holds pipeline configuration.
 type Config struct {
@@ -123,6 +140,36 @@ func (p *Pipeline) ID() string {
 	return p.id
 }
 
+// SetCluster sets the cluster label value for metrics.
+func (p *Pipeline) SetCluster(c string) {
+	p.cluster = c
+}
+
+// updateState transitions task state and emits both per-task and cluster-level gauges.
+func (p *Pipeline) updateState(newState string) {
+	p.mu.Lock()
+	oldState := string(p.status.State)
+	p.status.State = State(newState)
+	p.mu.Unlock()
+
+	// per-task state: new state = 1, others = 0
+	for _, s := range []string{stateRunning, stateStopped, statePaused, stateError} {
+		v := 0.0
+		if s == newState {
+			v = 1.0
+		}
+		metrics.TaskState.WithLabelValues(p.cluster, p.id, s).Set(v)
+	}
+
+	// cluster-level distribution counters (gauge inc/dec)
+	if oldState != "" && oldState != newState {
+		metrics.TaskTotal.WithLabelValues(p.cluster, oldState).Dec()
+	}
+	if oldState != newState {
+		metrics.TaskTotal.WithLabelValues(p.cluster, newState).Inc()
+	}
+}
+
 // Name returns the pipeline name.
 func (p *Pipeline) Name() string {
 	return p.name
@@ -195,7 +242,7 @@ func (p *Pipeline) Start(ctx context.Context) error {
 	p.wg.Add(1)
 	go p.run(ctx)
 
-	metrics.TaskTotal.WithLabelValues(p.id, "running").Inc()
+	p.updateState(stateRunning)
 	log.Info("pipeline started", zap.String("id", p.id))
 	return nil
 }
@@ -231,7 +278,7 @@ func (p *Pipeline) Stop(ctx context.Context) error {
 	p.status.StoppedAt = time.Now()
 	p.mu.Unlock()
 
-	metrics.TaskTotal.WithLabelValues(p.id, "stopped").Inc()
+	p.updateState(stateStopped)
 	log.Info("pipeline stopped", zap.String("id", p.id))
 	return nil
 }
@@ -339,16 +386,14 @@ func (p *Pipeline) processEvent(ctx context.Context, e *event.ChangeEvent) {
 				p.mu.Lock()
 				p.status.Statistics.EventsFailed++
 				p.mu.Unlock()
-				metrics.TaskEventsTotal.WithLabelValues(p.id, "failed").Inc()
 				continue
 			}
-			metrics.TaskEventsTotal.WithLabelValues(p.id, "written").Inc()
 		}
 	}
 
 	// Update latency metric
 	latency := time.Since(startTime).Seconds()
-	metrics.TaskLatencySeconds.WithLabelValues(p.id).Observe(latency)
+	metrics.TaskLatencySeconds.WithLabelValues(p.cluster, p.id).Observe(latency)
 
 	p.mu.Lock()
 	p.status.Statistics.EventsWritten++

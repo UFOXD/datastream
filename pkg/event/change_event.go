@@ -84,3 +84,34 @@ func (e *ChangeEvent) IsDataEvent() bool {
 		e.Type == EventTypeUpdate ||
 		e.Type == EventTypeDelete
 }
+
+// Size returns an estimated byte size of the event for metrics accounting.
+// This is a rough estimate (not exact serialized size) sufficient for byte-rate
+// observability. Counts source/table names, all Before+After field name+value
+// byte lengths, plus a fixed overhead for metadata.
+func (e *ChangeEvent) Size() int {
+	if e == nil {
+		return 0
+	}
+	n := len(e.Source.Database) + len(e.Table.Database) + len(e.Table.Table) + 64
+	for name, f := range e.Before.Fields {
+		n += len(name) + estimateValueSize(f.Value)
+	}
+	for name, f := range e.After.Fields {
+		n += len(name) + estimateValueSize(f.Value)
+	}
+	return n
+}
+
+func estimateValueSize(v interface{}) int {
+	switch x := v.(type) {
+	case nil:
+		return 0
+	case string:
+		return len(x)
+	case []byte:
+		return len(x)
+	default:
+		return 16
+	}
+}
