@@ -903,3 +903,24 @@ output = "table"  # table, json, yaml
 *文档版本：v1.0*
 *创建时间：2026-05-07*
 *更新时间：2026-05-07*
+
+---
+
+## 2026-05-16 Cluster 配置
+
+为给 Prometheus 指标加 `cluster` label，新增配置：
+
+- TOML: `cluster = "prod-east"`（顶层）
+- 默认值: `"default"`
+
+CLI flag (`--cluster`) 与 env (`DATASTREAM_CLUSTER`) 的解析由外部启动脚本完成
+（项目目前没有统一 cobra root）。
+
+同时新增 `[metrics]` 节：
+
+```toml
+[metrics]
+enabled = true              # 默认 true；设 false 关闭 pull-mode gauge 与装饰器
+scrape-interval = "5s"      # StatsCollector 轮询间隔
+stats-timeout = "1s"        # 每次 Stats() 超时
+```

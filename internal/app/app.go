@@ -14,16 +14,18 @@ import (
 	"github.com/UFOXD/datastream/pkg/config"
 	"github.com/UFOXD/datastream/internal/coordinator"
 	"github.com/UFOXD/datastream/internal/pipeline"
+	"github.com/UFOXD/datastream/pkg/metrics"
 	"github.com/pingcap/log"
 	"go.uber.org/zap"
 )
 
 // Application represents the DataStream application.
 type Application struct {
-	config      *config.Config
-	apiServer   *api.Server
-	coordinator pipeline.Coordinator
-	taskManager *pipeline.TaskManager
+	config         *config.Config
+	apiServer      *api.Server
+	coordinator    pipeline.Coordinator
+	taskManager    *pipeline.TaskManager
+	statsCollector *metrics.StatsCollector
 
 	// Shutdown state
 	shutdownOnce sync.Once
@@ -68,6 +70,7 @@ func New(cfg *config.Config) (*Application, error) {
 
 	// Initialize task manager
 	app.taskManager = pipeline.NewTaskManager()
+	app.taskManager.SetCluster(cfg.Cluster)
 
 	// Connect components
 	app.apiServer.SetTaskManager(app.taskManager)
@@ -85,6 +88,23 @@ func (app *Application) Run(ctx context.Context) error {
 	// Start API server
 	if err := app.apiServer.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start API server: %w", err)
+	}
+
+	// Start metrics StatsCollector if enabled
+	if app.config.Metrics.Enabled {
+		app.statsCollector = metrics.NewStatsCollector(
+			app.config.Cluster,
+			app.config.Metrics.ScrapeInterval,
+			app.config.Metrics.StatsTimeout,
+		)
+		app.taskManager.SetStatsCollector(app.statsCollector)
+		go app.statsCollector.Run(ctx)
+		log.Info("stats collector started",
+			zap.String("cluster", app.config.Cluster),
+			zap.Duration("interval", app.config.Metrics.ScrapeInterval),
+		)
+	} else {
+		log.Info("metrics collection disabled")
 	}
 
 	log.Info("DataStream application started",

@@ -477,3 +477,4 @@ func TestConnector_Schemas(t *testing.T) {
 		t.Error("expected internal cache to be unaffected by mutation of returned map")
 	}
 }
+

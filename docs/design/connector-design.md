@@ -2553,3 +2553,34 @@ ttl = 0  # 0 表示永不过期
 ---
 
 *返回 [设计文档总览](./Design.md)*
+
+---
+
+## 2026-05-16 StatsProvider 可选接口
+
+为支持 Prometheus pull-mode gauge 监控，新增 `internal/connector/stats.go`：
+
+```go
+type StatsProvider interface {
+    Stats(ctx context.Context) Stats
+}
+
+type Stats struct {
+    QueueSize, QueueCapacity int64
+    Position string  // opaque; MySQL/MariaDB MUST honor binlog mode (file-pos OR GTID)
+    LagSeconds float64  // NaN if unknown; negative clamped to 0
+    LastEventTime time.Time
+    SnapshotRunning bool
+    SnapshotProgress float64  // 0-100
+    SnapshotTotalTables, SnapshotRemainingTables int64
+    Connected bool
+}
+```
+
+约束：
+- `Stats(ctx)` 必须线程安全、非阻塞、ctx-aware
+- 不能 panic；StatsCollector 会 recover 并跳过本次采样
+- 零值即"不适用"
+
+12 个连接器已实现最小版本（`Connected` + `Position`）；snapshot/lag 等字段
+随连接器内部跟踪增强逐步填充。

@@ -535,3 +535,15 @@ func (p *Pipeline) processEvent(event *ChangeEvent) error {
 *文档版本：v1.0*
 *创建时间：2026-05-07*
 *更新时间：2026-05-07*
+
+---
+
+## 2026-05-16 ChangeEvent.Size
+
+```go
+func (e *ChangeEvent) Size() int
+```
+
+返回事件估算字节数，用于 `datastream_task_events_bytes` metric。统计源/表
+名长度、Before/After 所有 field name+value 字节数，加 64 字节固定 metadata
+开销。**不精确**——足以观察趋势。如需精确，未来可改为序列化后计算。

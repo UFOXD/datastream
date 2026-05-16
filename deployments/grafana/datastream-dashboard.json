@@ -1,0 +1,67 @@
+{
+  "title": "DataStream Overview",
+  "schemaVersion": 30,
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Events / sec by task & result",
+      "type": "graph",
+      "targets": [{
+        "expr": "sum by (task, result) (rate(datastream_task_events_total[1m]))",
+        "legendFormat": "{{task}} {{result}}"
+      }],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+    },
+    {
+      "id": 2,
+      "title": "Sink write latency p99",
+      "type": "graph",
+      "targets": [{
+        "expr": "histogram_quantile(0.99, sum by (le, task, sink) (rate(datastream_sink_write_latency_seconds_bucket[1m])))",
+        "legendFormat": "{{task}}/{{sink}}"
+      }],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+    },
+    {
+      "id": 3,
+      "title": "Source lag (seconds)",
+      "type": "graph",
+      "targets": [{
+        "expr": "datastream_source_lag_seconds",
+        "legendFormat": "{{task}}/{{source}}"
+      }],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+    },
+    {
+      "id": 4,
+      "title": "Connector connected (0/1)",
+      "type": "graph",
+      "targets": [{
+        "expr": "datastream_connector_connected",
+        "legendFormat": "{{task}}/{{role}}/{{type}}"
+      }],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+    },
+    {
+      "id": 5,
+      "title": "Sink errors / sec by type",
+      "type": "graph",
+      "targets": [{
+        "expr": "sum by (error_type) (rate(datastream_sink_write_errors_total[1m]))",
+        "legendFormat": "{{error_type}}"
+      }],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}
+    },
+    {
+      "id": 6,
+      "title": "Pipeline queue usage",
+      "type": "graph",
+      "targets": [{
+        "expr": "datastream_pipeline_queue_size / datastream_pipeline_queue_capacity",
+        "legendFormat": "{{task}}/{{stage}}"
+      }],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}
+    }
+  ]
+}

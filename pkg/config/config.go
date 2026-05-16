@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/UFOXD/datastream/pkg/logutil"
 	"github.com/pelletier/go-toml/v2"
@@ -13,10 +14,19 @@ import (
 // Config is the root configuration for DataStream.
 type Config struct {
 	Name        string            `toml:"name" json:"name"`
+	Cluster     string            `toml:"cluster" json:"cluster"`
 	Server      ServerConfig      `toml:"server" json:"server"`
 	Log         logutil.LogConfig `toml:"log" json:"log"`
 	Coordinator CoordinatorConfig `toml:"coordinator" json:"coordinator"`
 	Security    SecurityConfig    `toml:"security" json:"security"`
+	Metrics     MetricsConfig     `toml:"metrics" json:"metrics"`
+}
+
+// MetricsConfig configures Prometheus metric collection.
+type MetricsConfig struct {
+	Enabled        bool          `toml:"enabled" json:"enabled"`
+	ScrapeInterval time.Duration `toml:"scrape-interval" json:"scrape-interval"`
+	StatsTimeout   time.Duration `toml:"stats-timeout" json:"stats-timeout"`
 }
 
 // ServerConfig holds server-related configuration.
@@ -135,6 +145,23 @@ func (c *Config) Adjust() {
 	}
 	if c.Coordinator.Etcd.DialTimeout == 0 {
 		c.Coordinator.Etcd.DialTimeout = 5
+	}
+
+	// Cluster + metrics defaults
+	if c.Cluster == "" {
+		c.Cluster = "default"
+	}
+	if c.Metrics.ScrapeInterval == 0 {
+		c.Metrics.ScrapeInterval = 5 * time.Second
+	}
+	if c.Metrics.StatsTimeout == 0 {
+		c.Metrics.StatsTimeout = time.Second
+	}
+	// Enabled defaults to true: if the entire MetricsConfig is empty (no
+	// settings provided), treat as enabled. Users who want to disable must
+	// either set enabled=false explicitly in TOML or pass a non-zero interval.
+	if !c.Metrics.Enabled && c.Metrics.ScrapeInterval == 5*time.Second && c.Metrics.StatsTimeout == time.Second {
+		c.Metrics.Enabled = true
 	}
 }
 

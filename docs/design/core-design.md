@@ -809,3 +809,34 @@ func FNV64(s string) uint64 {
 ---
 
 *返回 [设计文档总览](./Design.md)*
+
+---
+
+## 2026-05-16 监控指标集成更新
+
+完整设计见 `docs/superpowers/specs/2026-05-16-metrics-integration-design.md`。
+
+关键变更：
+
+- 所有指标的 label `namespace` **重命名为 `cluster`**（避免与 Prometheus
+  `Namespace` 概念冲突）。
+- 注册方式从 `promauto` 隐式 init 改为显式 `metrics.MustRegisterAll(r)` +
+  `metrics.ResetForTest()` 支持测试隔离。
+- `TaskEventsTotal` 增加 `result` label，取值 `success` / `failed`；`type`
+  严格取值 `insert/update/delete/truncate/ddl/heartbeat/tombstone`。
+- `error_type` label 取值规范为 `retriable` / `non_retriable`，由
+  `metrics.ClassifyError(err)` 基于 `pkg/errors.IsRetryableError` 统一映射。
+- Pipeline 状态机由 `metrics.TaskState` 显式 Set 表达（每状态 0/1）+
+  `task_total` Inc/Dec 维持集群级分布。
+
+新增 7 个指标：
+
+| 指标 | 用途 |
+|------|------|
+| `datastream_task_state` | 单 task 当前状态 (0/1) |
+| `datastream_source_lag_seconds` | CDC 延迟 |
+| `datastream_source_last_event_seconds` | 最近事件 Unix 时间戳 |
+| `datastream_pipeline_queue_capacity` | 队列容量 |
+| `datastream_connector_connected` | 连接健康 |
+| `datastream_snapshot_tables_total` | 待快照表数 |
+| `datastream_snapshot_tables_remaining` | 剩余快照表数 |

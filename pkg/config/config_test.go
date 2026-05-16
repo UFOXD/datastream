@@ -133,3 +133,25 @@ func TestValidate(t *testing.T) {
 		})
 	}
 }
+
+func TestConfig_Cluster_Default(t *testing.T) {
+	cfg := &Config{}
+	cfg.Adjust()
+	if cfg.Cluster != "default" {
+		t.Errorf("cluster default = %q, want %q", cfg.Cluster, "default")
+	}
+}
+
+func TestConfig_Metrics_Defaults(t *testing.T) {
+	cfg := &Config{}
+	cfg.Adjust()
+	if !cfg.Metrics.Enabled {
+		t.Error("metrics.enabled default should be true")
+	}
+	if cfg.Metrics.ScrapeInterval == 0 {
+		t.Error("metrics.scrape_interval default unset")
+	}
+	if cfg.Metrics.StatsTimeout == 0 {
+		t.Error("metrics.stats_timeout default unset")
+	}
+}

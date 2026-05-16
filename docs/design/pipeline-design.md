@@ -816,3 +816,26 @@ type RouterConfig struct {
 ---
 
 *返回 [设计文档总览](./Design.md)*
+
+---
+
+## 2026-05-16 监控指标装配
+
+Pipeline 从两个点位发射指标，互不重叠：
+
+1. **消费点** (`Pipeline.run` 接收事件分支) 经 `instrumentEvent` 发射：
+   - `task_events_total{result=success}`
+   - `task_events_bytes`
+   - `source_lag_seconds`, `source_last_event_seconds`
+
+2. **Sink 装饰器** (`internal/sink/decorator.MetricsSink`) 发射：
+   - `sink_write_latency_seconds`
+   - `sink_write_errors_total{error_type}`
+   - `task_events_total{result=failed}`
+
+装配流程：调用方在构造 Pipeline 之前用 `TaskManager.WrapSink(sink, taskID, type)`
+包装每个 sink；然后 `TaskManager.RegisterSourceStats` / `RegisterSinkStats`
+将实现了 `connector.StatsProvider` 的连接器注册到 `StatsCollector`。
+
+由于当前 codebase 中 Pipeline 实际构造路径尚未完整（`task.Pipeline = nil`
+在 Create 后），上述 helper 已就位待 Pipeline 构造路径补全时使用。
