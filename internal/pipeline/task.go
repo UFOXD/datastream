@@ -5,7 +5,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/UFOXD/datastream/internal/connector"
+	"github.com/UFOXD/datastream/internal/sink"
+	sinkdec "github.com/UFOXD/datastream/internal/sink/decorator"
 	"github.com/UFOXD/datastream/pkg/event"
+	"github.com/UFOXD/datastream/pkg/metrics"
 	"github.com/pingcap/log"
 	"go.uber.org/zap"
 )
@@ -169,9 +173,11 @@ func (t *Task) GetStatus() TaskStatus {
 
 // TaskManager manages multiple tasks.
 type TaskManager struct {
-	tasks       map[string]*Task
-	mu          sync.RWMutex
-	coordinator Coordinator
+	tasks          map[string]*Task
+	mu             sync.RWMutex
+	coordinator    Coordinator
+	cluster        string
+	statsCollector *metrics.StatsCollector
 }
 
 // NewTaskManager creates a new task manager.
@@ -186,6 +192,104 @@ func (m *TaskManager) SetCoordinator(c Coordinator) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.coordinator = c
+}
+
+// SetCluster sets the cluster label used by per-task metrics.
+func (m *TaskManager) SetCluster(c string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cluster = c
+}
+
+// SetStatsCollector enables pull-mode metrics. When set, callers building
+// Pipelines should invoke WrapSink to wrap sinks with metrics decorators,
+// and RegisterSource/RegisterSink to register their StatsProviders.
+func (m *TaskManager) SetStatsCollector(sc *metrics.StatsCollector) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.statsCollector = sc
+}
+
+// Cluster returns the configured cluster label.
+func (m *TaskManager) Cluster() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.cluster
+}
+
+// StatsCollector returns the configured stats collector (or nil when disabled).
+func (m *TaskManager) StatsCollector() *metrics.StatsCollector {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.statsCollector
+}
+
+// WrapSink wraps a sink with the metrics decorator if metrics are enabled,
+// or returns the sink unchanged. Helper for Pipeline construction code.
+func (m *TaskManager) WrapSink(s sink.Connector, taskID, sinkType string) sink.Connector {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.statsCollector == nil {
+		return s
+	}
+	return sinkdec.WrapSink(s, m.cluster, taskID, sinkType)
+}
+
+// RegisterSourceStats registers a source connector's StatsProvider (no-op if
+// the connector doesn't implement StatsProvider or metrics are disabled).
+func (m *TaskManager) RegisterSourceStats(taskID, sourceType string, src interface{}) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.statsCollector == nil {
+		return
+	}
+	if sp, ok := src.(connector.StatsProvider); ok {
+		m.statsCollector.Register(taskID+":source", "source", sourceType, taskID, sp)
+	}
+}
+
+// RegisterSinkStats registers a sink connector's StatsProvider (no-op if the
+// connector doesn't implement StatsProvider or metrics are disabled).
+// Multiple sinks per task use slot indices.
+func (m *TaskManager) RegisterSinkStats(taskID, sinkType string, slot int, snk interface{}) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.statsCollector == nil {
+		return
+	}
+	if sp, ok := snk.(connector.StatsProvider); ok {
+		key := taskID + ":sink:" + intToStr(slot)
+		m.statsCollector.Register(key, "sink", sinkType, taskID, sp)
+	}
+}
+
+// UnregisterTaskStats removes all StatsProviders for a task from the collector.
+// Safe to call when metrics are disabled (no-op).
+func (m *TaskManager) UnregisterTaskStats(taskID string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.statsCollector == nil {
+		return
+	}
+	m.statsCollector.Unregister(taskID + ":source")
+	for i := 0; i < 16; i++ {
+		m.statsCollector.Unregister(taskID + ":sink:" + intToStr(i))
+	}
+}
+
+func intToStr(n int) string {
+	// avoid strconv import for tiny use
+	if n == 0 {
+		return "0"
+	}
+	var buf [4]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
 }
 
 // Create creates a new task.
@@ -261,6 +365,14 @@ func (m *TaskManager) Delete(ctx context.Context, id string) error {
 	}
 
 	delete(m.tasks, id)
+
+	// Best-effort: unregister stats providers for this task (no-op if disabled).
+	// Note: we call this while holding m.mu (Delete acquires write lock above).
+	// UnregisterTaskStats takes m.mu.RLock — must release first to avoid deadlock.
+	go func(taskID string) {
+		m.UnregisterTaskStats(taskID)
+	}(id)
+
 	log.Info("task deleted", zap.String("id", id))
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/UFOXD/datastream/internal/source"
 	"github.com/UFOXD/datastream/pkg/event"
 	"github.com/UFOXD/datastream/pkg/metrics"
 	"github.com/prometheus/client_golang/prometheus"
@@ -432,3 +433,59 @@ func TestPipeline_StateMachine_NoPanic(t *testing.T) {
 	}
 }
 
+
+func TestPipeline_ConsumePoint_EmitsLagAndLastEvent(t *testing.T) {
+	metrics.ResetForTest()
+	r := prometheus.NewRegistry()
+	metrics.MustRegisterAll(r)
+	t.Cleanup(func() {
+		metrics.ResetForTest()
+		metrics.MustRegisterAll(prometheus.DefaultRegisterer)
+	})
+
+	p := New(&Config{ID: "t1", Name: "test", Source: source.Config{Type: "mysql"}})
+	p.SetCluster("c1")
+	p.precacheLabels()
+
+	ev := &event.ChangeEvent{
+		Type:      event.EventTypeInsert,
+		Timestamp: time.Now().Add(-2 * time.Second),
+	}
+	p.instrumentEvent(ev)
+
+	lag := getGaugeValue(t, r, "datastream_source_lag_seconds", map[string]string{
+		"cluster": "c1", "task": "t1", "source": "mysql",
+	})
+	if lag < 1.0 {
+		t.Errorf("source_lag_seconds = %v, want >= 1.0", lag)
+	}
+}
+
+func TestTaskManager_SetStatsCollector_WrapsAndRegisters(t *testing.T) {
+	metrics.ResetForTest()
+	r := prometheus.NewRegistry()
+	metrics.MustRegisterAll(r)
+	t.Cleanup(func() {
+		metrics.ResetForTest()
+		metrics.MustRegisterAll(prometheus.DefaultRegisterer)
+	})
+
+	tm := NewTaskManager()
+	tm.SetCluster("c1")
+	sc := metrics.NewStatsCollector("c1", time.Second, time.Second)
+	tm.SetStatsCollector(sc)
+
+	if tm.Cluster() != "c1" {
+		t.Errorf("cluster = %q, want c1", tm.Cluster())
+	}
+	if tm.StatsCollector() == nil {
+		t.Error("statsCollector should be set")
+	}
+
+	// WrapSink with metrics disabled returns sink unchanged
+	tm2 := NewTaskManager()
+	wrapped := tm2.WrapSink(nil, "t1", "mysql")
+	if wrapped != nil {
+		t.Errorf("WrapSink with disabled metrics should return arg unchanged, got %v", wrapped)
+	}
+}

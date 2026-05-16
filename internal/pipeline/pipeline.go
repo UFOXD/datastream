@@ -145,6 +145,49 @@ func (p *Pipeline) SetCluster(c string) {
 	p.cluster = c
 }
 
+// precacheLabels pre-creates per-task label vectors so the consume hot path
+// avoids hashmap lookup. Must be called after SetCluster and once source is set.
+func (p *Pipeline) precacheLabels() {
+	sourceType := ""
+	if p.config != nil {
+		sourceType = p.config.Source.Type
+	}
+	p.successCounters = make(map[event.EventType]prometheus.Counter, 7)
+	for _, t := range []event.EventType{
+		event.EventTypeInsert, event.EventTypeUpdate, event.EventTypeDelete,
+		event.EventTypeTruncate, event.EventTypeDDL,
+		event.EventTypeHeartbeat, event.EventTypeTombstone,
+	} {
+		p.successCounters[t] = metrics.TaskEventsTotal.WithLabelValues(p.cluster, p.id, string(t), "success")
+	}
+	p.bytesAdder = metrics.TaskEventsBytes.WithLabelValues(p.cluster, p.id)
+	p.lagGauge = metrics.SourceLagSeconds.WithLabelValues(p.cluster, p.id, sourceType)
+	p.lastEventGauge = metrics.SourceLastEventSeconds.WithLabelValues(p.cluster, p.id, sourceType)
+}
+
+// instrumentEvent emits per-event metrics at the Pipeline consume point.
+// Only success counters / bytes / lag are emitted here; failed counters are
+// emitted by the Sink decorator on write failure. This avoids double-counting.
+func (p *Pipeline) instrumentEvent(e *event.ChangeEvent) {
+	if e == nil {
+		return
+	}
+	if c, ok := p.successCounters[e.Type]; ok {
+		c.Inc()
+	}
+	if p.bytesAdder != nil {
+		p.bytesAdder.Add(float64(e.Size()))
+	}
+	if !e.Timestamp.IsZero() && p.lagGauge != nil {
+		lag := time.Since(e.Timestamp).Seconds()
+		if lag < 0 {
+			lag = 0
+		}
+		p.lagGauge.Set(lag)
+		p.lastEventGauge.Set(float64(e.Timestamp.Unix()))
+	}
+}
+
 // updateState transitions task state and emits both per-task and cluster-level gauges.
 func (p *Pipeline) updateState(newState string) {
 	p.mu.Lock()
@@ -345,6 +388,7 @@ func (p *Pipeline) run(ctx context.Context) {
 				log.Info("source events channel closed", zap.String("id", p.id))
 				return
 			}
+			p.instrumentEvent(e)
 			p.processEvent(ctx, e)
 		case err, ok := <-p.source.Errors():
 			if !ok {
