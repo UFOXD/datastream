@@ -11,6 +11,8 @@ This guide covers deploying DataStream in various environments.
 5. [Configuration](#configuration)
 6. [Monitoring](#monitoring)
 7. [High Availability](#high-availability)
+8. [Operations](#operations)
+9. [Troubleshooting](#troubleshooting)
 
 ## Prerequisites
 
@@ -259,6 +261,7 @@ kubectl apply -f k8s/
 ```toml
 # datastream.toml
 name = "datastream"
+cluster = "default"        # value of the 'cluster' label on all metrics
 
 [server]
 addr = ":8300"
@@ -269,12 +272,18 @@ level = "info"
 
 [coordinator]
 type = "memory"  # Use "etcd" for production
+
+[metrics]
+enabled = true              # set false to disable pull-mode gauges
+scrape-interval = "5s"      # how often StatsCollector polls connectors
+stats-timeout = "1s"        # per-connector Stats() timeout
 ```
 
 ### Production Configuration
 
 ```toml
 name = "datastream"
+cluster = "prod-east"        # appears in every metric's 'cluster' label
 
 [server]
 addr = ":8300"
@@ -285,6 +294,11 @@ gc-ttl = 86400
 read-timeout = 30
 write-timeout = 30
 idle-timeout = 120
+
+[metrics]
+enabled = true
+scrape-interval = "5s"
+stats-timeout = "1s"
 
 [log]
 level = "info"
@@ -318,6 +332,7 @@ Override any config value with environment variables:
 
 ```bash
 export DATASTREAM_NAME=my-datastream
+export DATASTREAM_CLUSTER=prod-east
 export DATASTREAM_SERVER_ADDR=:8301
 export DATASTREAM_LOG_LEVEL=debug
 export DATASTREAM_COORDINATOR_TYPE=etcd
@@ -340,17 +355,52 @@ scrape_configs:
 
 ### Key Metrics
 
-| Metric | Description |
-|--------|-------------|
-| `datastream_events_total` | Total events processed |
-| `datastream_events_duration_seconds` | Event processing latency |
-| `datastream_tasks_running` | Number of running tasks |
-| `datastream_buffer_size` | Current buffer size |
-| `datastream_errors_total` | Total errors encountered |
+All metrics share the `datastream_` prefix and a `cluster` label whose value
+comes from the `cluster` config field (see [Configuration](#configuration)).
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `datastream_task_total` | Gauge | cluster, status | Cluster-level task count by state |
+| `datastream_task_state` | Gauge | cluster, task, state | Per-task current state (0/1) |
+| `datastream_task_events_total` | Counter | cluster, task, type, result | Events processed; result=success/failed |
+| `datastream_task_events_bytes` | Counter | cluster, task | Total bytes processed (estimate) |
+| `datastream_task_latency_seconds` | Histogram | cluster, task | End-to-end event latency |
+| `datastream_source_lag_seconds` | Gauge | cluster, task, source | CDC lag (now − event_time) |
+| `datastream_source_last_event_seconds` | Gauge | cluster, task, source | Unix timestamp of last observed event |
+| `datastream_source_snapshot_progress` | Gauge | cluster, task | Snapshot progress 0-100% |
+| `datastream_snapshot_tables_total` | Gauge | cluster, task | Tables to snapshot |
+| `datastream_snapshot_tables_remaining` | Gauge | cluster, task | Tables not yet snapshotted |
+| `datastream_sink_write_latency_seconds` | Histogram | cluster, task, sink | Sink write latency |
+| `datastream_sink_write_errors_total` | Counter | cluster, task, sink, error_type | Errors classified retriable/non_retriable |
+| `datastream_pipeline_queue_size` | Gauge | cluster, task, stage | Current queue depth |
+| `datastream_pipeline_queue_capacity` | Gauge | cluster, task, stage | Max queue depth |
+| `datastream_connector_connected` | Gauge | cluster, task, role, type | Connection health 0/1 |
+
+For the complete catalogue, label semantics, recommended PromQL queries, and
+known caveats (e.g. `result=failed` undercounting under sink-internal retry),
+see [`docs/operations/metrics.md`](../operations/metrics.md).
+
+### Recommended Alerts
+
+```yaml
+- alert: DataStreamSourceLagHigh
+  expr: datastream_source_lag_seconds > 60
+  for: 5m
+- alert: DataStreamSinkErrorsRising
+  expr: sum by (task) (rate(datastream_sink_write_errors_total[5m])) > 0.1
+  for: 10m
+- alert: DataStreamConnectorDown
+  expr: datastream_connector_connected == 0
+  for: 2m
+```
 
 ### Grafana Dashboard
 
-Import the provided dashboard from `docs/dashboards/datastream.json`.
+Import the reference dashboard from
+[`deployments/grafana/datastream-dashboard.json`](../../deployments/grafana/datastream-dashboard.json).
+It includes 6 panels: throughput by task/result, sink-write p99 latency,
+source lag, connector connectivity, error rate by retriable/non_retriable,
+and pipeline queue usage.
 
 ## High Availability
 
@@ -414,6 +464,28 @@ datastream-ctl task start mysql-to-kafka
 ```bash
 datastream-ctl task get mysql-to-kafka
 ```
+
+### Manage Sync Tables
+
+Tables can be added, paused, resumed, or removed at runtime without
+restarting the task:
+
+```bash
+# Add tables to the sync scope
+datastream-ctl tables add mydb.users mydb.orders
+
+# List currently-synced tables
+datastream-ctl tables list
+
+# Pause / resume a single table
+datastream-ctl tables pause mydb.users
+datastream-ctl tables resume mydb.users
+
+# Remove a table from sync
+datastream-ctl tables remove mydb.orders
+```
+
+The HTTP equivalents are documented in [`docs/api/openapi.yaml`](../api/openapi.yaml).
 
 ### Graceful Shutdown
 
