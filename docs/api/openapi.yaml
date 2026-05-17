@@ -4,7 +4,7 @@ info:
   description: |
     DataStream is a CDC (Change Data Capture) platform for real-time data synchronization.
     This API provides endpoints for managing tasks, positions, and monitoring the system.
-  version: 1.0.0
+  version: 1.1.0
   contact:
     name: DataStream Team
     email: support@datastream.io
@@ -18,6 +18,8 @@ tags:
     description: Health check endpoints
   - name: Tasks
     description: Task management operations
+  - name: Tables
+    description: Dynamic per-table sync management
   - name: Nodes
     description: Node management operations
   - name: Metrics
@@ -347,6 +349,212 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/tables:
+    get:
+      tags:
+        - Tables
+      summary: List sync tables
+      description: Returns all tables currently in the sync scope
+      operationId: listTables
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableListResponse'
+        '503':
+          description: Table manager not available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    post:
+      tags:
+        - Tables
+      summary: Add tables to sync
+      description: Adds one or more tables to the sync scope. Table names use `db.table` format.
+      operationId: addTables
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TablesRequest'
+            example:
+              tables:
+                - mydb.users
+                - mydb.orders
+      responses:
+        '200':
+          description: Tables added successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TablesActionResponse'
+              example:
+                status: added
+                tables: [mydb.users, mydb.orders]
+        '400':
+          description: Invalid request body or table name format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Table already exists in sync scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Table manager not available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      tags:
+        - Tables
+      summary: Remove tables from sync
+      description: Removes one or more tables from the sync scope
+      operationId: removeTables
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TablesRequest'
+            example:
+              tables:
+                - mydb.users
+      responses:
+        '200':
+          description: Tables removed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TablesActionResponse'
+              example:
+                status: removed
+                tables: [mydb.users]
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: One or more tables not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/tables/{db}/{table}:
+    get:
+      tags:
+        - Tables
+      summary: Get table sync state
+      description: Returns the sync state of a specific table (running, paused, error, etc.)
+      operationId: getTableState
+      parameters:
+        - name: db
+          in: path
+          required: true
+          description: Database name
+          schema:
+            type: string
+        - name: table
+          in: path
+          required: true
+          description: Table name
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableState'
+        '404':
+          description: Table not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/tables/{db}/{table}/pause:
+    post:
+      tags:
+        - Tables
+      summary: Pause table sync
+      description: Pauses syncing for a specific table without removing it from the scope
+      operationId: pauseTable
+      parameters:
+        - name: db
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Table paused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+              example:
+                status: paused
+        '404':
+          description: Table not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/tables/{db}/{table}/resume:
+    post:
+      tags:
+        - Tables
+      summary: Resume table sync
+      description: Resumes a previously paused table
+      operationId: resumeTable
+      parameters:
+        - name: db
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Table resumed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+              example:
+                status: running
+        '404':
+          description: Table not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/nodes:
     get:
       tags:
@@ -556,3 +764,67 @@ components:
         code:
           type: string
           description: HTTP status code
+
+    TablesRequest:
+      type: object
+      required: [tables]
+      properties:
+        tables:
+          type: array
+          items:
+            type: string
+          description: Fully-qualified table names in `db.table` format
+          example: [mydb.users, mydb.orders]
+      description: |
+        Maximum payload size is 1 MiB. Each table name MUST be in `db.table`
+        format; wildcard patterns are NOT supported here (they're configured
+        per-task via SyncScope).
+
+    TablesActionResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [added, removed]
+        tables:
+          type: array
+          items:
+            type: string
+
+    TableListResponse:
+      type: object
+      properties:
+        tables:
+          type: array
+          items:
+            type: string
+          description: Fully-qualified table names
+        count:
+          type: integer
+
+    TableState:
+      type: object
+      properties:
+        database:
+          type: string
+        table:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, paused, error, stopped]
+          description: Current sync state of this table
+        added_at:
+          type: string
+          format: date-time
+          description: When the table was added to the sync scope
+        sync_started:
+          type: string
+          format: date-time
+          description: When sync first started (omitted if not yet started)
+        paused_at:
+          type: string
+          format: date-time
+          description: When the table was paused (only present when status=paused)
+        error:
+          type: string
+          description: Last error message (only present when status=error)

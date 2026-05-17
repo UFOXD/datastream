@@ -40,6 +40,12 @@ Content-Type: application/json
 | POST | `/api/v1/tasks/{id}/resume` | Resume task |
 | GET | `/api/v1/tasks/{id}/position` | Get position |
 | PUT | `/api/v1/tasks/{id}/position` | Set position |
+| GET | `/api/v1/tables` | List sync tables |
+| POST | `/api/v1/tables` | Add tables to sync |
+| DELETE | `/api/v1/tables` | Remove tables from sync |
+| GET | `/api/v1/tables/{db}/{table}` | Get table sync state |
+| POST | `/api/v1/tables/{db}/{table}/pause` | Pause table sync |
+| POST | `/api/v1/tables/{db}/{table}/resume` | Resume table sync |
 | GET | `/api/v1/nodes` | List nodes |
 | GET | `/metrics` | Prometheus metrics |
 
@@ -77,6 +83,26 @@ curl http://localhost:8300/api/v1/tasks/mysql-to-kafka/position
 
 ```bash
 curl http://localhost:8300/api/v1/nodes
+```
+
+### Add tables to sync scope
+
+```bash
+curl -X POST http://localhost:8300/api/v1/tables \
+  -H "Content-Type: application/json" \
+  -d '{"tables": ["mydb.users", "mydb.orders"]}'
+```
+
+### Pause a single table
+
+```bash
+curl -X POST http://localhost:8300/api/v1/tables/mydb/users/pause
+```
+
+### List sync tables
+
+```bash
+curl http://localhost:8300/api/v1/tables
 ```
 
 ## Error Responses
@@ -122,4 +148,21 @@ datastream-ctl task get my-task
 
 # Delete task
 datastream-ctl task delete my-task
+
+# List sync tables
+datastream-ctl tables list
+
+# Add tables
+datastream-ctl tables add mydb.users mydb.orders
+
+# Pause a table
+datastream-ctl tables pause mydb.users
 ```
+
+## Prometheus Metrics
+
+The `/metrics` endpoint exposes Prometheus metrics for monitoring DataStream
+health and performance. See `docs/operations/metrics.md` for the full metric
+catalog, label conventions, and recommended Grafana panels / alert rules.
+A reference Grafana dashboard is provided in
+`deployments/grafana/datastream-dashboard.json`.
