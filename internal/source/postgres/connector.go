@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -167,8 +169,9 @@ func (c *Connector) Start(ctx context.Context) error {
 	log.Info("starting PostgreSQL connector")
 
 	// Connect to PostgreSQL with replication mode
-	connStr := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s&replication=database",
-		c.config.User, c.config.Password, c.config.Host, c.config.Port,
+	connStr := fmt.Sprintf("postgres://%s:%s@%s/%s?sslmode=%s&replication=database",
+		c.config.User, c.config.Password,
+		net.JoinHostPort(c.config.Host, strconv.Itoa(c.config.Port)),
 		c.config.Database, c.config.SSLMode)
 
 	pgConn, err := pgconn.Connect(ctx, connStr)

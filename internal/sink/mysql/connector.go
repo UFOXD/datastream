@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -56,11 +58,10 @@ func (c *Connector) Initialize(ctx context.Context, config sink.Config) error {
 	c.config = cfg
 
 	// Build DSN
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true&timeout=%ds",
+	dsn := fmt.Sprintf("%s:%s@tcp(%s)/%s?parseTime=true&timeout=%ds",
 		cfg.User,
 		cfg.Password,
-		cfg.Host,
-		cfg.Port,
+		net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)),
 		cfg.Database,
 		cfg.ConnectTimeout,
 	)

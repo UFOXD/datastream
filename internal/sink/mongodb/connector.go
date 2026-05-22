@@ -3,6 +3,8 @@ package mongodb
 import (
 	"context"
 	"fmt"
+	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -379,7 +381,7 @@ func parseConfig(config sink.Config) (*Config, error) {
 	}
 	if config.Connection.Port > 0 {
 		if len(cfg.Hosts) > 0 {
-			cfg.Hosts[0] = fmt.Sprintf("%s:%d", config.Connection.Host, config.Connection.Port)
+			cfg.Hosts[0] = net.JoinHostPort(config.Connection.Host, strconv.Itoa(config.Connection.Port))
 		}
 	}
 	cfg.User = config.Connection.User

@@ -5,6 +5,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -82,12 +84,10 @@ func (c *Connector) Initialize(ctx context.Context, config source.Config) error 
 	c.status.State = source.StateInitializing
 	c.status.Timestamp = time.Now().Format(time.RFC3339)
 
-	// Build DSN: oracle://user:password@host:port/service_name
-	dsn := fmt.Sprintf("oracle://%s:%s@%s:%d/%s",
+	dsn := fmt.Sprintf("oracle://%s:%s@%s/%s",
 		cfg.User,
 		cfg.Password,
-		cfg.Host,
-		cfg.Port,
+		net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)),
 		cfg.ServiceName,
 	)
 

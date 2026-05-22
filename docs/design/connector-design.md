@@ -2584,3 +2584,72 @@ type Stats struct {
 
 12 个连接器已实现最小版本（`Connected` + `Position`）；snapshot/lag 等字段
 随连接器内部跟踪增强逐步填充。
+
+---
+
+## 2026-05-23 IPv6 网络兼容性
+
+### 背景
+
+所有连接器的地址拼接统一使用 `net.JoinHostPort` 替代 `fmt.Sprintf("%s:%d", host, port)`，
+确保 IPv6 地址（如 `::1`、`2001:db8::1`）自动加方括号，生成正确的 `[::1]:3306` 格式。
+
+### 修改范围
+
+| 连接器 | 文件 | 修改内容 |
+|--------|------|---------|
+| Source MySQL | `internal/source/mysql/connector.go` | DSN `tcp()` 内地址使用 `net.JoinHostPort` |
+| Source MariaDB | `internal/source/mariadb/connector.go` | 同上 |
+| Source PostgreSQL | `internal/source/postgres/connector.go` | replication URL 地址使用 `net.JoinHostPort` |
+| Source Oracle | `internal/source/oracle/connector.go` | DSN URL 地址使用 `net.JoinHostPort` |
+| Source SQL Server | `internal/source/sqlserver/connector.go` | DSN URL 地址使用 `net.JoinHostPort` |
+| Source MongoDB | `internal/source/mongodb/connector.go` | Host+Port→Hosts 兼容路径使用 `net.JoinHostPort` |
+| Sink MySQL | `internal/sink/mysql/connector.go` | DSN `tcp()` 内地址使用 `net.JoinHostPort` |
+| Sink MongoDB | `internal/sink/mongodb/connector.go` | Host+Port→Hosts 兼容路径使用 `net.JoinHostPort` |
+
+### 无需修改的连接器
+
+| 连接器 | 原因 |
+|--------|------|
+| Source/Sink PostgreSQL (key=value) | `host=%s port=%d` 格式天然兼容 IPv6 |
+| Sink Kafka | `kafka-go` 内部已使用 `net.JoinHostPort`，`Brokers []string` 由用户传入 |
+| Sink Elasticsearch | `URLs []string` 由用户传入完整 URL，ES 客户端按 URL 标准解析 |
+| Sink Redis | `Addr string` 由用户传入完整 `host:port`，go-redis 支持 `[::1]:6379` |
+| API Server | Go `net/http` 原生支持 IPv6 监听 |
+
+### 配置示例
+
+```toml
+# IPv4（不变）
+[source.connection]
+host = "192.168.1.100"
+port = 3306
+
+# IPv6
+[source.connection]
+host = "::1"
+port = 3306
+
+# IPv6 完整地址
+[source.connection]
+host = "2001:db8::1"
+port = 3306
+
+# 多地址连接器（MongoDB/Kafka/ES）使用完整地址
+[source.properties]
+hosts = ["[::1]:27017", "[2001:db8::1]:27017"]
+
+[sink.properties]
+brokers = ["[::1]:9092", "[2001:db8::1]:9092"]
+urls = ["http://[::1]:9200", "http://[2001:db8::1]:9200"]
+
+# Redis
+[sink.connection]
+addr = "[::1]:6379"
+```
+
+### 设计原则
+
+- `Host` + `Port` 分开配置时，由连接器内部使用 `net.JoinHostPort` 拼接，用户无需关心 IPv6 方括号
+- 多地址字段（`Hosts`/`Brokers`/`URLs`）用户直接传入完整地址字符串，IPv6 需自行加方括号
+- 不引入额外的地址解析层，保持配置的直观性
