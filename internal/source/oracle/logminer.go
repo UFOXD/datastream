@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -114,6 +113,8 @@ func (r *LogMinerReader) parseRows(ctx context.Context, rows *sql.Rows) ([]*even
 		Database:  r.config.ServiceName,
 	}
 
+	parser := NewDmlParser()
+
 	var (
 		events []*event.ChangeEvent
 		seqNo  int
@@ -148,9 +149,8 @@ func (r *LogMinerReader) parseRows(ctx context.Context, rows *sql.Rows) ([]*even
 
 		switch opCode {
 		case 1: // Insert
-			after, err := parseInsert(sqlRedo.String)
+			entry, err := parser.Parse(sqlRedo.String)
 			if err != nil {
-				// Skip unparseable rows rather than failing the entire batch
 				continue
 			}
 			ev := &event.ChangeEvent{
@@ -158,14 +158,14 @@ func (r *LogMinerReader) parseRows(ctx context.Context, rows *sql.Rows) ([]*even
 				Type:      event.EventTypeInsert,
 				Table:     tableInfo,
 				Source:    sourceInfo,
-				After:     after,
+				After:     entryToRowData(entry.NewValues),
 				Timestamp: ts,
 				Position:  pos,
 			}
 			events = append(events, ev)
 
 		case 2: // Delete
-			before, err := parseDelete(sqlRedo.String)
+			entry, err := parser.Parse(sqlRedo.String)
 			if err != nil {
 				continue
 			}
@@ -174,23 +174,25 @@ func (r *LogMinerReader) parseRows(ctx context.Context, rows *sql.Rows) ([]*even
 				Type:      event.EventTypeDelete,
 				Table:     tableInfo,
 				Source:    sourceInfo,
-				Before:    before,
+				Before:    entryToRowData(entry.OldValues),
 				Timestamp: ts,
 				Position:  pos,
 			}
 			events = append(events, ev)
 
 		case 3: // Update
-			after, err := parseUpdate(sqlRedo.String)
+			entry, err := parser.Parse(sqlRedo.String)
 			if err != nil {
 				continue
 			}
+			mergeUpdateValues(entry)
 			ev := &event.ChangeEvent{
 				ID:        event.GenerateEventID(&sourceInfo, ts, seqNo),
 				Type:      event.EventTypeUpdate,
 				Table:     tableInfo,
 				Source:    sourceInfo,
-				After:     after,
+				After:     entryToRowData(entry.NewValues),
+				Before:    entryToRowData(entry.OldValues),
 				Timestamp: ts,
 				Position:  pos,
 			}
@@ -215,6 +217,24 @@ func (r *LogMinerReader) parseRows(ctx context.Context, rows *sql.Rows) ([]*even
 	}
 
 	return events, nil
+}
+
+// mergeUpdateValues copies WHERE columns not present in SET to NewValues.
+func mergeUpdateValues(entry *DmlEntry) {
+	for col, oldVal := range entry.OldValues {
+		if _, exists := entry.NewValues[col]; !exists {
+			entry.NewValues[col] = oldVal
+		}
+	}
+}
+
+// entryToRowData converts map[string]string to event.RowData using parseValue for type inference.
+func entryToRowData(vals map[string]string) event.RowData {
+	rd := event.NewRowData()
+	for col, raw := range vals {
+		rd.Set(col, parseValue(raw), "")
+	}
+	return *rd
 }
 
 // ReadChanges starts a LogMiner session, reads changes, stops the session, and returns events.
@@ -254,121 +274,7 @@ func (r *LogMinerReader) UpdatePosition(scn uint64) {
 	r.SetSCN(scn)
 }
 
-// ---- SQL parsing helpers ----
-
-// insertValuesRe matches: INSERT INTO "OWNER"."TABLE"("COL1","COL2") VALUES (val1,val2)
-var insertColsRe = regexp.MustCompile(`(?i)INSERT\s+INTO\s+(?:"[^"]+"\.)?"[^"]+"\s*\(([^)]+)\)\s*VALUES\s*\((.+)\)\s*;?\s*$`)
-
-// updateSetRe matches: UPDATE "OWNER"."TABLE" SET "COL" = val WHERE ...
-var updateSetRe = regexp.MustCompile(`(?i)UPDATE\s+(?:"[^"]+"\.)?"[^"]+"\s+SET\s+(.+?)\s+WHERE\s+`)
-
-// deleteWhereRe matches: DELETE FROM "OWNER"."TABLE" WHERE "COL" = val AND ...
-var deleteWhereRe = regexp.MustCompile(`(?i)DELETE\s+FROM\s+(?:"[^"]+"\.)?"[^"]+"\s+WHERE\s+(.+?)\s*;?\s*$`)
-
-// colAssignRe matches: "COLNAME" = value pairs (used for SET and WHERE clauses)
-var colAssignRe = regexp.MustCompile(`"([^"]+)"\s*=\s*([^,]+?)(?:\s+AND\b|\s*,|\s*$)`)
-
-// parseInsert parses a LogMiner INSERT SQL_REDO string into RowData.
-func parseInsert(sqlRedo string) (event.RowData, error) {
-	m := insertColsRe.FindStringSubmatch(sqlRedo)
-	if m == nil {
-		return event.RowData{}, fmt.Errorf("cannot parse INSERT: %s", sqlRedo)
-	}
-
-	cols := splitQuotedList(m[1])
-	vals := splitValueList(m[2])
-
-	if len(cols) != len(vals) {
-		return event.RowData{}, fmt.Errorf("column/value count mismatch in INSERT")
-	}
-
-	rd := event.NewRowData()
-	for i, col := range cols {
-		col = strings.Trim(col, `" `)
-		rd.Set(col, parseValue(vals[i]), "")
-	}
-	return *rd, nil
-}
-
-// parseUpdate parses a LogMiner UPDATE SQL_REDO string into RowData (after-image).
-func parseUpdate(sqlRedo string) (event.RowData, error) {
-	m := updateSetRe.FindStringSubmatch(sqlRedo)
-	if m == nil {
-		return event.RowData{}, fmt.Errorf("cannot parse UPDATE: %s", sqlRedo)
-	}
-
-	rd := event.NewRowData()
-	for _, pair := range colAssignRe.FindAllStringSubmatch(m[1], -1) {
-		col := strings.TrimSpace(pair[1])
-		rd.Set(col, parseValue(strings.TrimSpace(pair[2])), "")
-	}
-	if len(rd.Fields) == 0 {
-		return event.RowData{}, fmt.Errorf("no SET columns found in UPDATE")
-	}
-	return *rd, nil
-}
-
-// parseDelete parses a LogMiner DELETE SQL_REDO string into RowData (before-image from WHERE).
-func parseDelete(sqlRedo string) (event.RowData, error) {
-	m := deleteWhereRe.FindStringSubmatch(sqlRedo)
-	if m == nil {
-		return event.RowData{}, fmt.Errorf("cannot parse DELETE: %s", sqlRedo)
-	}
-
-	rd := event.NewRowData()
-	for _, pair := range colAssignRe.FindAllStringSubmatch(m[1], -1) {
-		col := strings.TrimSpace(pair[1])
-		rd.Set(col, parseValue(strings.TrimSpace(pair[2])), "")
-	}
-	if len(rd.Fields) == 0 {
-		return event.RowData{}, fmt.Errorf("no WHERE columns found in DELETE")
-	}
-	return *rd, nil
-}
-
-// splitQuotedList splits a comma-separated list of (possibly quoted) column names.
-func splitQuotedList(s string) []string {
-	var parts []string
-	for _, p := range strings.Split(s, ",") {
-		parts = append(parts, strings.TrimSpace(p))
-	}
-	return parts
-}
-
-// splitValueList splits a comma-separated values list respecting single-quoted strings.
-func splitValueList(s string) []string {
-	var vals []string
-	var cur strings.Builder
-	inQuote := false
-
-	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		switch {
-		case ch == '\'' && !inQuote:
-			inQuote = true
-			cur.WriteByte(ch)
-		case ch == '\'' && inQuote:
-			// Handle escaped single quote ''
-			if i+1 < len(s) && s[i+1] == '\'' {
-				cur.WriteByte(ch)
-				cur.WriteByte(ch)
-				i++
-			} else {
-				inQuote = false
-				cur.WriteByte(ch)
-			}
-		case ch == ',' && !inQuote:
-			vals = append(vals, strings.TrimSpace(cur.String()))
-			cur.Reset()
-		default:
-			cur.WriteByte(ch)
-		}
-	}
-	if cur.Len() > 0 {
-		vals = append(vals, strings.TrimSpace(cur.String()))
-	}
-	return vals
-}
+// ---- SQL value helpers ----
 
 // parseValue converts a raw SQL value string to a Go value.
 // Handles: NULL, single-quoted strings, numeric literals.
