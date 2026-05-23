@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/UFOXD/datastream/internal/pipeline"
+	"github.com/UFOXD/datastream/internal/source"
 	"github.com/UFOXD/datastream/pkg/metrics"
 )
 
@@ -1126,4 +1127,954 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// ---------------------------------------------------------------------------
+// Server Start / Stop lifecycle
+// ---------------------------------------------------------------------------
+
+func TestServerStartStop(t *testing.T) {
+	cfg := &ServerConfig{
+		Addr:         "127.0.0.1:0", // port 0 = OS picks free port
+		ReadTimeout:  1,
+		WriteTimeout: 1,
+		IdleTimeout:  1,
+	}
+	s := NewServer(cfg)
+
+	ctx := context.Background()
+	if err := s.Start(ctx); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	// Stop should succeed
+	if err := s.Stop(ctx); err != nil {
+		t.Fatalf("Stop returned error: %v", err)
+	}
+}
+
+func TestServerStopWithoutStart(t *testing.T) {
+	s := NewServer(nil)
+	// httpServer is nil when never started — Stop should return nil.
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop without Start should return nil, got: %v", err)
+	}
+}
+
+func TestNewServerNilConfig(t *testing.T) {
+	s := NewServer(nil)
+	if s.config.Addr != ":8300" {
+		t.Errorf("Expected default addr ':8300', got '%s'", s.config.Addr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Task handlers — happy-path & error paths not yet covered
+// ---------------------------------------------------------------------------
+
+func TestListTasksHappyPath(t *testing.T) {
+	tm := pipeline.NewTaskManager()
+	tm.Create(context.Background(), "t-1", "task-one", nil)
+	tm.Create(context.Background(), "t-2", "task-two", nil)
+
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(tm)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	var data map[string]interface{}
+	json.Unmarshal(resp.Data, &data)
+
+	if data["count"] != float64(2) {
+		t.Errorf("Expected count 2, got %v", data["count"])
+	}
+}
+
+func TestCreateTaskHappyPath(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(pipeline.NewTaskManager())
+
+	body := `{"id":"new-task","name":"test-create","config":null}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("Expected 201, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateTaskInvalidBody(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(pipeline.NewTaskManager())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", strings.NewReader(`not-json`))
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400, got %d", rec.Code)
+	}
+}
+
+func TestCreateTaskDuplicate(t *testing.T) {
+	tm := pipeline.NewTaskManager()
+	tm.Create(context.Background(), "dup", "dup-task", nil)
+
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(tm)
+
+	body := `{"id":"dup","name":"dup-task"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("Expected 500 for duplicate, got %d", rec.Code)
+	}
+}
+
+func TestGetTaskHappyPath(t *testing.T) {
+	tm := pipeline.NewTaskManager()
+	tm.Create(context.Background(), "t-1", "test", nil)
+
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(tm)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/t-1", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetTaskNoManager(t *testing.T) {
+	s := NewServer(nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/t-1", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected 503, got %d", rec.Code)
+	}
+}
+
+func TestDeleteTaskHappyPath(t *testing.T) {
+	tm := pipeline.NewTaskManager()
+	tm.Create(context.Background(), "del-1", "del", nil)
+
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(tm)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/tasks/del-1", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDeleteTaskNoManager(t *testing.T) {
+	s := NewServer(nil)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/tasks/del-1", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected 503, got %d", rec.Code)
+	}
+}
+
+func TestDeleteTaskNotFound(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(pipeline.NewTaskManager())
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/tasks/nonexistent", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("Expected 500, got %d", rec.Code)
+	}
+}
+
+func TestStartTaskNoManager(t *testing.T) {
+	s := NewServer(nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/t-1/start", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected 503, got %d", rec.Code)
+	}
+}
+
+func TestStartTaskNotFound(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(pipeline.NewTaskManager())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/nonexistent/start", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("Expected 500, got %d", rec.Code)
+	}
+}
+
+func TestStopTaskNoManager(t *testing.T) {
+	s := NewServer(nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/t-1/stop", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected 503, got %d", rec.Code)
+	}
+}
+
+func TestStopTaskNotFound(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(pipeline.NewTaskManager())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/nonexistent/stop", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("Expected 500, got %d", rec.Code)
+	}
+}
+
+func TestStopTaskHappyPath(t *testing.T) {
+	tm := pipeline.NewTaskManager()
+	tm.Create(context.Background(), "t-1", "test", nil)
+
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(tm)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/t-1/stop", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPauseTaskNoManager(t *testing.T) {
+	s := NewServer(nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/t-1/pause", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected 503, got %d", rec.Code)
+	}
+}
+
+func TestPauseTaskNotFound(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(pipeline.NewTaskManager())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/nonexistent/pause", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Expected 404, got %d", rec.Code)
+	}
+}
+
+func TestPauseTaskNotRunning(t *testing.T) {
+	// Pause requires TaskStatusRunning; a newly created task is TaskStatusCreated.
+	tm := pipeline.NewTaskManager()
+	tm.Create(context.Background(), "t-1", "test", nil)
+
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(tm)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/t-1/pause", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("Expected 500, got %d", rec.Code)
+	}
+}
+
+func TestResumeTaskNoManager(t *testing.T) {
+	s := NewServer(nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/t-1/resume", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected 503, got %d", rec.Code)
+	}
+}
+
+func TestResumeTaskNotFound(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(pipeline.NewTaskManager())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/nonexistent/resume", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Expected 404, got %d", rec.Code)
+	}
+}
+
+func TestResumeTaskNotPaused(t *testing.T) {
+	// Resume requires TaskStatusPaused; a newly created task is TaskStatusCreated.
+	tm := pipeline.NewTaskManager()
+	tm.Create(context.Background(), "t-1", "test", nil)
+
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(tm)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/t-1/resume", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("Expected 500, got %d", rec.Code)
+	}
+}
+
+func TestGetTaskPositionNoManager(t *testing.T) {
+	s := NewServer(nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/t-1/position", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected 503, got %d", rec.Code)
+	}
+}
+
+func TestGetTaskPositionNotFound(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(pipeline.NewTaskManager())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/nonexistent/position", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Expected 404, got %d", rec.Code)
+	}
+}
+
+func TestGetTaskPositionHappyPath(t *testing.T) {
+	tm := pipeline.NewTaskManager()
+	tm.Create(context.Background(), "t-1", "test", nil)
+
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(tm)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/t-1/position", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	var data map[string]interface{}
+	json.Unmarshal(resp.Data, &data)
+
+	if data["taskId"] != "t-1" {
+		t.Errorf("Expected taskId 't-1', got '%v'", data["taskId"])
+	}
+}
+
+func TestSetTaskPositionNoManager(t *testing.T) {
+	s := NewServer(nil)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/tasks/t-1/position", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected 503, got %d", rec.Code)
+	}
+}
+
+func TestSetTaskPositionNotFound(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(pipeline.NewTaskManager())
+
+	body := `{"binlogFile":"mysql-bin.000001","binlogPos":100}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/tasks/nonexistent/position", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Expected 404, got %d", rec.Code)
+	}
+}
+
+func TestSetTaskPositionInvalidBody(t *testing.T) {
+	tm := pipeline.NewTaskManager()
+	tm.Create(context.Background(), "t-1", "test", nil)
+
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(tm)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/tasks/t-1/position", strings.NewReader(`not json`))
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400, got %d", rec.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Cluster / Node handlers — additional coverage
+// ---------------------------------------------------------------------------
+
+func TestListNodesNoCoordinator(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/nodes", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected 503, got %d", rec.Code)
+	}
+}
+
+func TestListNodesHappyPath(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	coord := pipeline.NewMemoryCoordinator("node-1")
+	coord.RegisterNode(context.Background(), "node-1", pipeline.NodeInfo{ID: "node-1"})
+	coord.RegisterNode(context.Background(), "node-2", pipeline.NodeInfo{ID: "node-2"})
+	s.SetCoordinator(coord)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/nodes", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	var data map[string]interface{}
+	json.Unmarshal(resp.Data, &data)
+
+	if data["count"] != float64(2) {
+		t.Errorf("Expected count 2, got %v", data["count"])
+	}
+}
+
+func TestGetClusterStatusWithCoordinatorNoTaskMgr(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	coord := pipeline.NewMemoryCoordinator("node-1")
+	coord.RegisterNode(context.Background(), "node-1", pipeline.NodeInfo{ID: "node-1"})
+	s.SetCoordinator(coord)
+	// Intentionally do NOT set taskMgr
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/cluster/status", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	var data map[string]interface{}
+	json.Unmarshal(resp.Data, &data)
+
+	// Without taskMgr, taskCount should not appear
+	if _, ok := data["taskCount"]; ok {
+		t.Error("Expected no 'taskCount' when taskMgr is nil")
+	}
+	if data["nodeCount"] != float64(1) {
+		t.Errorf("Expected nodeCount 1, got %v", data["nodeCount"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Table handler tests
+// ---------------------------------------------------------------------------
+
+func newTestTableManager(tables ...string) *source.TableManager {
+	scope := &source.TableScope{Names: tables}
+	return source.NewTableManager(&source.TableManagerConfig{
+		Scope: scope,
+	})
+}
+
+func TestListTablesNoManager(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tables", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected 503, got %d", rec.Code)
+	}
+}
+
+func TestListTablesHappyPath(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.TableManager = newTestTableManager("db1.users", "db1.orders")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tables", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	var data map[string]interface{}
+	json.Unmarshal(resp.Data, &data)
+
+	if data["count"] != float64(2) {
+		t.Errorf("Expected count 2, got %v", data["count"])
+	}
+}
+
+func TestAddTablesNoManager(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+
+	body := `{"tables":["db1.t1"]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tables", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected 503, got %d", rec.Code)
+	}
+}
+
+func TestAddTablesHappyPath(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.TableManager = newTestTableManager()
+
+	body := `{"tables":["db1.newtable"]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tables", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	var data map[string]interface{}
+	json.Unmarshal(resp.Data, &data)
+
+	if data["status"] != "added" {
+		t.Errorf("Expected status 'added', got '%v'", data["status"])
+	}
+}
+
+func TestAddTablesInvalidBody(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.TableManager = newTestTableManager()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tables", strings.NewReader(`not-json`))
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400, got %d", rec.Code)
+	}
+}
+
+func TestAddTablesEmptyList(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.TableManager = newTestTableManager()
+
+	body := `{"tables":[]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tables", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400, got %d", rec.Code)
+	}
+}
+
+func TestAddTablesDuplicate(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.TableManager = newTestTableManager("db1.users")
+
+	body := `{"tables":["db1.users"]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tables", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("Expected 409, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAddTablesInvalidFormat(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.TableManager = newTestTableManager()
+
+	// "noDot" is invalid — parseTableName requires "database.table" format
+	body := `{"tables":["noDot"]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tables", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRemoveTablesNoManager(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+
+	body := `{"tables":["db1.t1"]}`
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/tables", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected 503, got %d", rec.Code)
+	}
+}
+
+func TestRemoveTablesHappyPath(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.TableManager = newTestTableManager("db1.users")
+
+	body := `{"tables":["db1.users"]}`
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/tables", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	var data map[string]interface{}
+	json.Unmarshal(resp.Data, &data)
+
+	if data["status"] != "removed" {
+		t.Errorf("Expected status 'removed', got '%v'", data["status"])
+	}
+}
+
+func TestRemoveTablesInvalidBody(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.TableManager = newTestTableManager()
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/tables", strings.NewReader(`not-json`))
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400, got %d", rec.Code)
+	}
+}
+
+func TestRemoveTablesEmptyList(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.TableManager = newTestTableManager()
+
+	body := `{"tables":[]}`
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/tables", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400, got %d", rec.Code)
+	}
+}
+
+func TestRemoveTablesNotFound(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.TableManager = newTestTableManager()
+
+	body := `{"tables":["db1.nonexistent"]}`
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/tables", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Expected 404, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRemoveTablesInvalidFormat(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.TableManager = newTestTableManager()
+
+	body := `{"tables":["noDot"]}`
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/tables", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetTableStateNoManager(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tables/db1/users", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected 503, got %d", rec.Code)
+	}
+}
+
+func TestGetTableStateHappyPath(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.TableManager = newTestTableManager("db1.users")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tables/db1/users", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	var data map[string]interface{}
+	json.Unmarshal(resp.Data, &data)
+
+	if data["database"] != "db1" {
+		t.Errorf("Expected database 'db1', got '%v'", data["database"])
+	}
+	if data["table"] != "users" {
+		t.Errorf("Expected table 'users', got '%v'", data["table"])
+	}
+	if data["status"] != "pending" {
+		t.Errorf("Expected status 'pending', got '%v'", data["status"])
+	}
+}
+
+func TestGetTableStateNotFound(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.TableManager = newTestTableManager()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tables/db1/nonexistent", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Expected 404, got %d", rec.Code)
+	}
+}
+
+func TestPauseTableNoManager(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tables/db1/users/pause", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected 503, got %d", rec.Code)
+	}
+}
+
+func TestPauseTableHappyPath(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.TableManager = newTestTableManager("db1.users")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tables/db1/users/pause", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	var data map[string]string
+	json.Unmarshal(resp.Data, &data)
+
+	if data["status"] != "paused" {
+		t.Errorf("Expected status 'paused', got '%s'", data["status"])
+	}
+}
+
+func TestPauseTableNotFound(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.TableManager = newTestTableManager()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tables/db1/nonexistent/pause", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Expected 404, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestResumeTableNoManager(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tables/db1/users/resume", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected 503, got %d", rec.Code)
+	}
+}
+
+func TestResumeTableHappyPath(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.TableManager = newTestTableManager("db1.users")
+
+	// First pause the table, then resume it
+	s.TableManager.PauseTable(context.Background(), "db1", "users")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tables/db1/users/resume", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	var data map[string]string
+	json.Unmarshal(resp.Data, &data)
+
+	if data["status"] != "running" {
+		t.Errorf("Expected status 'running', got '%s'", data["status"])
+	}
+}
+
+func TestResumeTableNotFound(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.TableManager = newTestTableManager()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tables/db1/nonexistent/resume", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Expected 404, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// getTableState with paused and error states
+// ---------------------------------------------------------------------------
+
+func TestGetTableStatePausedTable(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.TableManager = newTestTableManager("db1.users")
+
+	// Pause the table to populate PausedAt field
+	s.TableManager.PauseTable(context.Background(), "db1", "users")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tables/db1/users", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	var data map[string]interface{}
+	json.Unmarshal(resp.Data, &data)
+
+	if data["status"] != "paused" {
+		t.Errorf("Expected status 'paused', got '%v'", data["status"])
+	}
+	if _, ok := data["paused_at"]; !ok {
+		t.Error("Expected 'paused_at' field in response for paused table")
+	}
 }
