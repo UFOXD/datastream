@@ -29,6 +29,7 @@ type Pipeline struct {
 	config      *Config
 	mu          sync.RWMutex
 	stopCh      chan struct{}
+	stopOnce    sync.Once
 	wg          sync.WaitGroup
 
 	// Pre-cached metric label vectors filled by precacheLabels (Stage 3).
@@ -301,7 +302,7 @@ func (p *Pipeline) Stop(ctx context.Context) error {
 	p.mu.Unlock()
 
 	log.Info("stopping pipeline", zap.String("id", p.id))
-	close(p.stopCh)
+	p.stopOnce.Do(func() { close(p.stopCh) })
 	p.wg.Wait()
 
 	// Stop source

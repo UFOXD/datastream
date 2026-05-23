@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/UFOXD/datastream/internal/sink"
 	"github.com/UFOXD/datastream/internal/source"
 	"github.com/UFOXD/datastream/pkg/event"
 	"github.com/UFOXD/datastream/pkg/metrics"
@@ -458,6 +459,86 @@ func TestPipeline_ConsumePoint_EmitsLagAndLastEvent(t *testing.T) {
 	})
 	if lag < 1.0 {
 		t.Errorf("source_lag_seconds = %v, want >= 1.0", lag)
+	}
+}
+
+// mockSource is a minimal source.Connector for testing Pipeline lifecycle.
+type mockSource struct {
+	eventsCh chan *event.ChangeEvent
+	errorsCh chan error
+}
+
+func newMockSource() *mockSource {
+	return &mockSource{
+		eventsCh: make(chan *event.ChangeEvent),
+		errorsCh: make(chan error),
+	}
+}
+
+func (m *mockSource) Name() string                                              { return "mock" }
+func (m *mockSource) Initialize(_ context.Context, _ source.Config) error       { return nil }
+func (m *mockSource) Start(_ context.Context) error                             { return nil }
+func (m *mockSource) Stop(_ context.Context) error                              { return nil }
+func (m *mockSource) Status() source.Status                                     { return source.Status{} }
+func (m *mockSource) Events() <-chan *event.ChangeEvent                         { return m.eventsCh }
+func (m *mockSource) Errors() <-chan error                                      { return m.errorsCh }
+func (m *mockSource) GetPosition() *event.Position                              { return nil }
+func (m *mockSource) SetPosition(_ *event.Position) error                       { return nil }
+func (m *mockSource) GetSchema(_, _ string) (*event.TableInfo, error)           { return nil, nil }
+func (m *mockSource) SyncScope() *source.SyncScope                             { return nil }
+func (m *mockSource) AddTables(_ context.Context, _ []string) error             { return nil }
+func (m *mockSource) RemoveTables(_ context.Context, _ []string) error          { return nil }
+func (m *mockSource) ListTables() []string                                      { return nil }
+
+// mockSink is a minimal sink.Connector for testing Pipeline lifecycle.
+type mockSink struct{}
+
+func (m *mockSink) Name() string                                                  { return "mock" }
+func (m *mockSink) Initialize(_ context.Context, _ sink.Config) error             { return nil }
+func (m *mockSink) Start(_ context.Context) error                                 { return nil }
+func (m *mockSink) Stop(_ context.Context) error                                  { return nil }
+func (m *mockSink) Status() sink.Status                                           { return sink.Status{} }
+func (m *mockSink) Write(_ context.Context, _ []*event.ChangeEvent) error         { return nil }
+func (m *mockSink) Flush(_ context.Context) error                                 { return nil }
+func (m *mockSink) GetPosition() *event.Position                                  { return nil }
+func (m *mockSink) SupportsDDL() bool                                             { return false }
+func (m *mockSink) SupportsTransaction() bool                                     { return false }
+
+func TestPipelineStopDoubleCallNoPanic(t *testing.T) {
+	metrics.ResetForTest()
+	r := prometheus.NewRegistry()
+	metrics.MustRegisterAll(r)
+	t.Cleanup(func() {
+		metrics.ResetForTest()
+		metrics.MustRegisterAll(prometheus.DefaultRegisterer)
+	})
+
+	cfg := &Config{ID: "double-stop", Name: "double-stop-test"}
+	p := New(cfg)
+	p.SetCluster("c1")
+
+	src := newMockSource()
+	p.SetSource(src)
+	p.AddSink(&mockSink{})
+
+	ctx := context.Background()
+	if err := p.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Call Stop concurrently from two goroutines. Without sync.Once
+	// protection both goroutines can pass the state check and
+	// double-close stopCh, causing a panic.
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			errs <- p.Stop(ctx)
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("Stop returned error: %v", err)
+		}
 	}
 }
 
