@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -223,6 +224,54 @@ func TestMetricsEndpoint_ReturnsPrometheusFormat(t *testing.T) {
 	// Ensure old dummy string is gone
 	if strings.Contains(body, "# DataStream Metrics") && !strings.Contains(body, "# HELP") {
 		t.Errorf("body still contains old dummy '# DataStream Metrics' without # HELP — handler not wired")
+	}
+}
+
+func TestSetTaskPositionActuallyUpdates(t *testing.T) {
+	// Setup: create a server with a TaskManager containing a task "task-1".
+	tm := pipeline.NewTaskManager()
+	if _, err := tm.Create(context.Background(), "task-1", "test-task", nil); err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(tm)
+
+	// Send PUT /api/v1/tasks/task-1/position with binlog position.
+	body := `{"binlogFile":"mysql-bin.000003","binlogPos":1234,"txId":"tx-99","seqNo":7}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/tasks/task-1/position", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.router.ServeHTTP(rec, req)
+
+	// Assert 200 OK response.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	// Retrieve the task and verify position was actually set.
+	task, err := tm.Get("task-1")
+	if err != nil {
+		t.Fatalf("failed to get task: %v", err)
+	}
+
+	pos := task.GetPosition()
+	if pos == nil {
+		t.Fatal("Expected position to be set, got nil")
+	}
+
+	if pos.BinlogFile != "mysql-bin.000003" {
+		t.Errorf("Expected BinlogFile 'mysql-bin.000003', got '%s'", pos.BinlogFile)
+	}
+	if pos.BinlogPos != 1234 {
+		t.Errorf("Expected BinlogPos 1234, got %d", pos.BinlogPos)
+	}
+	if pos.TxID != "tx-99" {
+		t.Errorf("Expected TxID 'tx-99', got '%s'", pos.TxID)
+	}
+	if pos.SeqNo != 7 {
+		t.Errorf("Expected SeqNo 7, got %d", pos.SeqNo)
 	}
 }
 

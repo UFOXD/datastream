@@ -10,6 +10,7 @@ import (
 
 	"github.com/UFOXD/datastream/internal/pipeline"
 	"github.com/UFOXD/datastream/internal/source"
+	"github.com/UFOXD/datastream/pkg/event"
 	"github.com/gorilla/mux"
 	"github.com/pingcap/log"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -343,7 +344,13 @@ func (s *Server) setTaskPosition(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update position
-	_ = task // Position update would go here
+	task.SetPosition(&event.Position{
+		BinlogFile: pos.BinlogFile,
+		BinlogPos:  pos.BinlogPos,
+		LSN:        pos.LSN,
+		TxID:       pos.TxID,
+		SeqNo:      pos.SeqNo,
+	})
 
 	s.writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
