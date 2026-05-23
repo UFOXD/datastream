@@ -18,13 +18,14 @@ import (
 
 // EtcdCoordinator implements Coordinator using etcd.
 type EtcdCoordinator struct {
-	client   *clientv3.Client
-	session  *concurrency.Session
-	prefix   string
-	nodeID   string
-	leases   map[string]clientv3.LeaseID
-	mu       sync.RWMutex
-	watchers map[string][]chan pipeline.LeadershipEvent
+	client    *clientv3.Client
+	session   *concurrency.Session
+	prefix    string
+	nodeID    string
+	leases    map[string]clientv3.LeaseID
+	elections map[string]*concurrency.Election // cached Election per taskID for correct Resign
+	mu        sync.RWMutex
+	watchers  map[string][]chan pipeline.LeadershipEvent
 }
 
 // EtcdConfig holds etcd coordinator configuration.
@@ -61,11 +62,12 @@ func NewEtcdCoordinator(cfg *EtcdConfig) (*EtcdCoordinator, error) {
 	}
 
 	return &EtcdCoordinator{
-		client:   client,
-		prefix:   cfg.Prefix,
-		nodeID:   cfg.NodeID,
-		leases:   make(map[string]clientv3.LeaseID),
-		watchers: make(map[string][]chan pipeline.LeadershipEvent),
+		client:    client,
+		prefix:    cfg.Prefix,
+		nodeID:    cfg.NodeID,
+		leases:    make(map[string]clientv3.LeaseID),
+		elections: make(map[string]*concurrency.Election),
+		watchers:  make(map[string][]chan pipeline.LeadershipEvent),
 	}, nil
 }
 
@@ -236,6 +238,11 @@ func (c *EtcdCoordinator) AcquireLeadership(ctx context.Context, taskID string) 
 		return false, fmt.Errorf("campaign failed: %w", err)
 	}
 
+	// Cache the election so ReleaseLeadership can Resign on the same instance
+	c.mu.Lock()
+	c.elections[taskID] = election
+	c.mu.Unlock()
+
 	log.Info("leadership acquired",
 		zap.String("taskId", taskID),
 		zap.String("nodeId", c.nodeID))
@@ -248,8 +255,17 @@ func (c *EtcdCoordinator) ReleaseLeadership(ctx context.Context, taskID string) 
 		return nil
 	}
 
-	key := c.leadershipKey(taskID)
-	election := concurrency.NewElection(c.session, key)
+	// Retrieve and remove the cached election for this task.
+	// Resign must be called on the same Election instance that won Campaign.
+	c.mu.Lock()
+	election, ok := c.elections[taskID]
+	delete(c.elections, taskID)
+	c.mu.Unlock()
+
+	if !ok {
+		// No election in map means AcquireLeadership was never called (or already released).
+		return nil
+	}
 
 	if err := election.Resign(ctx); err != nil {
 		return fmt.Errorf("resign failed: %w", err)
