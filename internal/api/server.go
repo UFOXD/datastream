@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"runtime"
 	"time"
 
 	"github.com/UFOXD/datastream/internal/pipeline"
@@ -104,9 +105,19 @@ func (s *Server) setupRoutes() {
 
 	// Nodes
 	api.HandleFunc("/nodes", s.listNodes).Methods("GET")
+	api.HandleFunc("/nodes/{id}", s.deleteNode).Methods("DELETE")
+	api.HandleFunc("/nodes/{id}/drain", s.drainNode).Methods("POST")
+
+	// Cluster
+	api.HandleFunc("/cluster/status", s.getClusterStatus).Methods("GET")
+	api.HandleFunc("/cluster/leader", s.getClusterLeader).Methods("GET")
+	api.HandleFunc("/cluster/rebalance", s.rebalanceCluster).Methods("POST")
 
 	// Readiness probe
 	s.router.HandleFunc("/ready", s.readyCheck).Methods("GET")
+
+	// Diagnostics
+	s.router.HandleFunc("/diagnose", s.diagnose).Methods("GET")
 
 	// Metrics (Prometheus format)
 	s.router.Handle("/metrics", s.handleMetrics())
@@ -508,6 +519,131 @@ func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
 		"nodes": nodes,
 		"count": len(nodes),
 	})
+}
+
+// deleteNode unregisters a node from the cluster.
+func (s *Server) deleteNode(w http.ResponseWriter, r *http.Request) {
+	if s.coordinator == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "coordinator not available")
+		return
+	}
+
+	id := mux.Vars(r)["id"]
+	if err := s.coordinator.UnregisterNode(r.Context(), id); err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]string{"status": "unregistered"})
+}
+
+// drainNode stops all tasks on a node (single-node assumption: stops all tasks).
+func (s *Server) drainNode(w http.ResponseWriter, r *http.Request) {
+	if s.taskMgr == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "task manager not available")
+		return
+	}
+
+	tasks := s.taskMgr.List()
+	stopped := 0
+	for _, t := range tasks {
+		if t.GetStatus() == pipeline.TaskStatusRunning {
+			if err := t.Stop(r.Context()); err != nil {
+				log.Warn("failed to stop task during drain",
+					zap.String("taskId", t.ID), zap.Error(err))
+				continue
+			}
+			stopped++
+		}
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":       "drained",
+		"tasksStopped": stopped,
+	})
+}
+
+// getClusterStatus returns cluster overview including nodes and task counts.
+func (s *Server) getClusterStatus(w http.ResponseWriter, r *http.Request) {
+	if s.coordinator == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "coordinator not available")
+		return
+	}
+
+	nodes, err := s.coordinator.ListNodes(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	result := map[string]interface{}{
+		"nodes":     nodes,
+		"nodeCount": len(nodes),
+	}
+
+	if s.taskMgr != nil {
+		tasks := s.taskMgr.List()
+		result["taskCount"] = len(tasks)
+	}
+
+	s.writeJSON(w, http.StatusOK, result)
+}
+
+// getClusterLeader returns the current cluster leader information.
+func (s *Server) getClusterLeader(w http.ResponseWriter, r *http.Request) {
+	if s.coordinator == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "coordinator not available")
+		return
+	}
+
+	nodes, err := s.coordinator.ListNodes(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// In single-node mode, return the first registered node as the leader.
+	if len(nodes) > 0 {
+		s.writeJSON(w, http.StatusOK, map[string]interface{}{
+			"leader": nodes[0],
+		})
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"leader": nil,
+	})
+}
+
+// rebalanceCluster triggers task rebalancing across cluster nodes.
+func (s *Server) rebalanceCluster(w http.ResponseWriter, r *http.Request) {
+	if s.coordinator == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "coordinator not available")
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]string{
+		"status":  "rebalanced",
+		"message": "single-node mode, no rebalance needed",
+	})
+}
+
+// diagnose returns diagnostic runtime information.
+func (s *Server) diagnose(w http.ResponseWriter, r *http.Request) {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	info := map[string]interface{}{
+		"goVersion":  runtime.Version(),
+		"goroutines": runtime.NumGoroutine(),
+		"heapAlloc":  m.HeapAlloc,
+		"heapSys":    m.HeapSys,
+		"numGC":      m.NumGC,
+	}
+	if s.taskMgr != nil {
+		info["tasks"] = len(s.taskMgr.List())
+	}
+	s.writeJSON(w, http.StatusOK, info)
 }
 
 // handleMetrics returns the Prometheus metrics handler.

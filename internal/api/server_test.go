@@ -763,6 +763,364 @@ func TestReadyCheckWithoutManager(t *testing.T) {
 	}
 }
 
+// --- Cluster management endpoint tests ---
+
+func TestDeleteNodeNoCoordinator(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/nodes/node-1", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected status 503, got %d", rec.Code)
+	}
+}
+
+func TestDeleteNodeHappyPath(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	coord := pipeline.NewMemoryCoordinator("node-1")
+	coord.RegisterNode(context.Background(), "node-1", pipeline.NodeInfo{ID: "node-1", Address: "localhost:8300"})
+	s.SetCoordinator(coord)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/nodes/node-1", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+	if resp.Code != 0 {
+		t.Errorf("Expected code 0, got %d", resp.Code)
+	}
+
+	var data map[string]string
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("Failed to unmarshal data: %v", err)
+	}
+	if data["status"] != "unregistered" {
+		t.Errorf("Expected status 'unregistered', got '%s'", data["status"])
+	}
+
+	// Verify node was actually removed
+	nodes, _ := coord.ListNodes(context.Background())
+	if len(nodes) != 0 {
+		t.Errorf("Expected 0 nodes after delete, got %d", len(nodes))
+	}
+}
+
+func TestDrainNodeNoManager(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/nodes/node-1/drain", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected status 503, got %d", rec.Code)
+	}
+}
+
+func TestDrainNodeHappyPath(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	tm := pipeline.NewTaskManager()
+	// Create tasks (they won't be running, so stopped count should be 0)
+	tm.Create(context.Background(), "task-1", "test-1", nil)
+	tm.Create(context.Background(), "task-2", "test-2", nil)
+	s.SetTaskManager(tm)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/nodes/node-1/drain", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("Failed to unmarshal data: %v", err)
+	}
+	if data["status"] != "drained" {
+		t.Errorf("Expected status 'drained', got '%v'", data["status"])
+	}
+	// Tasks are not running, so tasksStopped should be 0
+	if data["tasksStopped"] != float64(0) {
+		t.Errorf("Expected tasksStopped 0, got %v", data["tasksStopped"])
+	}
+}
+
+func TestGetClusterStatusNoCoordinator(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/cluster/status", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected status 503, got %d", rec.Code)
+	}
+}
+
+func TestGetClusterStatusHappyPath(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	coord := pipeline.NewMemoryCoordinator("node-1")
+	coord.RegisterNode(context.Background(), "node-1", pipeline.NodeInfo{ID: "node-1"})
+	s.SetCoordinator(coord)
+
+	tm := pipeline.NewTaskManager()
+	tm.Create(context.Background(), "task-1", "test", nil)
+	s.SetTaskManager(tm)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/cluster/status", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("Failed to unmarshal data: %v", err)
+	}
+
+	if data["nodeCount"] != float64(1) {
+		t.Errorf("Expected nodeCount 1, got %v", data["nodeCount"])
+	}
+	if data["taskCount"] != float64(1) {
+		t.Errorf("Expected taskCount 1, got %v", data["taskCount"])
+	}
+}
+
+func TestGetClusterLeaderNoCoordinator(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/cluster/leader", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected status 503, got %d", rec.Code)
+	}
+}
+
+func TestGetClusterLeaderHappyPath(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	coord := pipeline.NewMemoryCoordinator("node-1")
+	coord.RegisterNode(context.Background(), "node-1", pipeline.NodeInfo{ID: "node-1", Address: "localhost:8300"})
+	s.SetCoordinator(coord)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/cluster/leader", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("Failed to unmarshal data: %v", err)
+	}
+
+	if data["leader"] == nil {
+		t.Error("Expected non-nil leader")
+	}
+}
+
+func TestGetClusterLeaderNoNodes(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	coord := pipeline.NewMemoryCoordinator("node-1")
+	s.SetCoordinator(coord)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/cluster/leader", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("Failed to unmarshal data: %v", err)
+	}
+
+	// With no nodes, leader should be null
+	if data["leader"] != nil {
+		t.Errorf("Expected nil leader when no nodes, got %v", data["leader"])
+	}
+}
+
+func TestRebalanceClusterNoCoordinator(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/rebalance", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected status 503, got %d", rec.Code)
+	}
+}
+
+func TestRebalanceClusterHappyPath(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	coord := pipeline.NewMemoryCoordinator("node-1")
+	s.SetCoordinator(coord)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/rebalance", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	var data map[string]string
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("Failed to unmarshal data: %v", err)
+	}
+
+	if data["status"] != "rebalanced" {
+		t.Errorf("Expected status 'rebalanced', got '%s'", data["status"])
+	}
+	if data["message"] != "single-node mode, no rebalance needed" {
+		t.Errorf("Expected single-node message, got '%s'", data["message"])
+	}
+}
+
+func TestDiagnoseHappyPath(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+
+	req := httptest.NewRequest(http.MethodGet, "/diagnose", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+	if resp.Code != 0 {
+		t.Errorf("Expected code 0, got %d", resp.Code)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("Failed to unmarshal data: %v", err)
+	}
+
+	// Verify expected fields
+	if _, ok := data["goVersion"]; !ok {
+		t.Error("Expected 'goVersion' field")
+	}
+	if _, ok := data["goroutines"]; !ok {
+		t.Error("Expected 'goroutines' field")
+	}
+	if _, ok := data["heapAlloc"]; !ok {
+		t.Error("Expected 'heapAlloc' field")
+	}
+	if _, ok := data["heapSys"]; !ok {
+		t.Error("Expected 'heapSys' field")
+	}
+	if _, ok := data["numGC"]; !ok {
+		t.Error("Expected 'numGC' field")
+	}
+	// Without taskMgr, "tasks" should not be present
+	if _, ok := data["tasks"]; ok {
+		t.Error("Expected no 'tasks' field when taskMgr is nil")
+	}
+}
+
+func TestDiagnoseWithTaskManager(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	tm := pipeline.NewTaskManager()
+	tm.Create(context.Background(), "task-1", "test", nil)
+	tm.Create(context.Background(), "task-2", "test2", nil)
+	s.SetTaskManager(tm)
+
+	req := httptest.NewRequest(http.MethodGet, "/diagnose", nil)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("Failed to unmarshal data: %v", err)
+	}
+
+	if data["tasks"] != float64(2) {
+		t.Errorf("Expected tasks 2, got %v", data["tasks"])
+	}
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
