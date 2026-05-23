@@ -279,6 +279,7 @@ func (c *Connector) ApplyDDL(ctx context.Context, ddl *event.ChangeEvent) error 
 	if !ok || sql == "" {
 		return nil
 	}
+	log.Info("applying DDL", zap.String("sql", sql))
 	_, err := c.db.ExecContext(ctx, sql)
 	return err
 }

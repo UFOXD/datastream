@@ -205,6 +205,29 @@ func TestParseUnsupportedDml(t *testing.T) {
 	}
 }
 
+// T15b: 大写 DML
+func TestParseUppercaseInsert(t *testing.T) {
+	sql := `INSERT INTO "S"."T"("ID","NAME") VALUES (1,'John');`
+	entry := mustParse(t, sql)
+
+	if entry.Type != DmlInsert {
+		t.Fatalf("Type = %v, want DmlInsert", entry.Type)
+	}
+	assertNewValue(t, entry, "ID", "1")
+	assertNewValue(t, entry, "NAME", "'John'")
+}
+
+// T15c: 前导空白
+func TestParseLeadingWhitespace(t *testing.T) {
+	sql := "\n  insert into \"S\".\"T\"(\"ID\") values (1);"
+	entry := mustParse(t, sql)
+
+	if entry.Type != DmlInsert {
+		t.Fatalf("Type = %v, want DmlInsert", entry.Type)
+	}
+	assertNewValue(t, entry, "ID", "1")
+}
+
 // T16: TO_TIMESTAMP_TZ
 func TestParseUpdateToTimestampTz(t *testing.T) {
 	sql := `update "S"."T" set "D" = TO_TIMESTAMP_TZ('2024-02-14 10:58:02.202590 +01:00') where "ID" = 1;`

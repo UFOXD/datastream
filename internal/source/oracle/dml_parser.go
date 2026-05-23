@@ -46,7 +46,12 @@ func (p *dmlParser) Parse(sql string) (*DmlEntry, error) {
 		return nil, fmt.Errorf("empty SQL")
 	}
 
-	switch p.sql[0] {
+	p.skipWhitespace()
+	if p.pos >= p.length {
+		return nil, fmt.Errorf("empty SQL after trimming whitespace")
+	}
+
+	switch p.sql[p.pos] | 0x20 { // lowercase via bitmask
 	case 'i':
 		return p.parseInsert()
 	case 'u':
@@ -464,6 +469,17 @@ func (p *dmlParser) readQuotedString() string {
 func (p *dmlParser) skipSpaces() {
 	for p.pos < p.length && p.sql[p.pos] == ' ' {
 		p.pos++
+	}
+}
+
+func (p *dmlParser) skipWhitespace() {
+	for p.pos < p.length {
+		c := p.sql[p.pos]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			p.pos++
+			continue
+		}
+		break
 	}
 }
 
