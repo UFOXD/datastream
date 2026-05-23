@@ -442,8 +442,9 @@ func (p *Pipeline) processEvent(ctx context.Context, e *event.ChangeEvent) {
 	}
 
 	// Dispatch to sinks
+	var writeErr error
 	if p.dispatcher != nil {
-		p.dispatcher.Dispatch(ctx, e, p.sinks)
+		writeErr = p.dispatcher.Dispatch(ctx, e, p.sinks)
 	} else {
 		// Simple broadcast to all sinks
 		for _, s := range p.sinks {
@@ -451,10 +452,7 @@ func (p *Pipeline) processEvent(ctx context.Context, e *event.ChangeEvent) {
 				log.Error("failed to write to sink",
 					zap.String("sink", s.Name()),
 					zap.Error(err))
-				p.mu.Lock()
-				p.status.Statistics.EventsFailed++
-				p.mu.Unlock()
-				continue
+				writeErr = err
 			}
 		}
 	}
@@ -464,6 +462,10 @@ func (p *Pipeline) processEvent(ctx context.Context, e *event.ChangeEvent) {
 	metrics.TaskLatencySeconds.WithLabelValues(p.cluster, p.id).Observe(latency)
 
 	p.mu.Lock()
-	p.status.Statistics.EventsWritten++
+	if writeErr != nil {
+		p.status.Statistics.EventsFailed++
+	} else {
+		p.status.Statistics.EventsWritten++
+	}
 	p.mu.Unlock()
 }

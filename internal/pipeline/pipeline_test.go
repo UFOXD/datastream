@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -503,6 +504,67 @@ func (m *mockSink) Flush(_ context.Context) error                               
 func (m *mockSink) GetPosition() *event.Position                                  { return nil }
 func (m *mockSink) SupportsDDL() bool                                             { return false }
 func (m *mockSink) SupportsTransaction() bool                                     { return false }
+
+// errMockSink is a sink.Connector whose Write always returns an error.
+type errMockSink struct {
+	writeErr error
+}
+
+func newErrMockSink(err error) *errMockSink { return &errMockSink{writeErr: err} }
+
+func (m *errMockSink) Name() string                                                  { return "err-mock" }
+func (m *errMockSink) Initialize(_ context.Context, _ sink.Config) error             { return nil }
+func (m *errMockSink) Start(_ context.Context) error                                 { return nil }
+func (m *errMockSink) Stop(_ context.Context) error                                  { return nil }
+func (m *errMockSink) Status() sink.Status                                           { return sink.Status{} }
+func (m *errMockSink) Write(_ context.Context, _ []*event.ChangeEvent) error         { return m.writeErr }
+func (m *errMockSink) Flush(_ context.Context) error                                 { return nil }
+func (m *errMockSink) GetPosition() *event.Position                                  { return nil }
+func (m *errMockSink) SupportsDDL() bool                                             { return false }
+func (m *errMockSink) SupportsTransaction() bool                                     { return false }
+
+func TestEventsWrittenNotIncrementedOnError(t *testing.T) {
+	metrics.ResetForTest()
+	r := prometheus.NewRegistry()
+	metrics.MustRegisterAll(r)
+	t.Cleanup(func() {
+		metrics.ResetForTest()
+		metrics.MustRegisterAll(prometheus.DefaultRegisterer)
+	})
+
+	cfg := &Config{ID: "err-sink-test", Name: "err-sink-test"}
+	p := New(cfg)
+	p.SetCluster("c1")
+
+	src := newMockSource()
+	p.SetSource(src)
+	p.AddSink(newErrMockSink(errors.New("disk full")))
+
+	ctx := context.Background()
+	if err := p.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Send one event
+	src.eventsCh <- &event.ChangeEvent{
+		ID:        "e1",
+		Type:      event.EventTypeInsert,
+		Timestamp: time.Now(),
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	stats := p.Status().Statistics
+	if stats.EventsWritten != 0 {
+		t.Errorf("expected EventsWritten=0 on sink error, got %d", stats.EventsWritten)
+	}
+	if stats.EventsFailed < 1 {
+		t.Errorf("expected EventsFailed>=1, got %d", stats.EventsFailed)
+	}
+
+	if err := p.Stop(ctx); err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+}
 
 func TestPipelineStopDoubleCallNoPanic(t *testing.T) {
 	metrics.ResetForTest()
