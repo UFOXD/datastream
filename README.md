@@ -5,7 +5,7 @@ DataStream 是一个基于 Go 语言实现的变更数据捕获（CDC）平台�
 ## 特性
 
 - **Source 6 种**：MySQL、PostgreSQL、MongoDB、Oracle、SQL Server、MariaDB
-- **Sink 6 种**：MySQL、PostgreSQL、MongoDB、Kafka、Elasticsearch、Redis
+- **Sink 8 种**：MySQL、PostgreSQL、MongoDB、Kafka、Elasticsearch、Redis、Oracle、SQL Server
 - **运行模式**：单节点或基于 etcd 的多节点集群（leader 选举 + 任务漂移）
 - **运行时管理**：动态增减同步表、暂停/恢复单表、通配符自动发现
 - **可观测性**：Prometheus 指标 + Grafana 参考面板
