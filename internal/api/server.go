@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/UFOXD/datastream/internal/pipeline"
@@ -379,17 +378,32 @@ func (s *Server) handleMetrics() http.Handler {
 	return promhttp.Handler()
 }
 
-// writeJSON writes a JSON response.
-func (s *Server) writeJSON(w http.ResponseWriter, code int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(data)
+// apiResponse is the standard API response envelope.
+// All API responses use this format: {"code": 0, "message": "success", "data": {...}}
+// For errors: {"code": 404, "message": "task not found"}
+type apiResponse struct {
+	Code    int         `json:"code"`
+	Message string      `json:"message"`
+	Data    interface{} `json:"data,omitempty"`
 }
 
-// writeError writes an error response.
-func (s *Server) writeError(w http.ResponseWriter, code int, message string) {
-	s.writeJSON(w, code, map[string]string{
-		"error": message,
-		"code":  strconv.Itoa(code),
+// writeJSON writes a JSON response wrapped in the standard envelope.
+func (s *Server) writeJSON(w http.ResponseWriter, statusCode int, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(apiResponse{
+		Code:    0,
+		Message: "success",
+		Data:    data,
+	})
+}
+
+// writeError writes an error response in the standard envelope format.
+func (s *Server) writeError(w http.ResponseWriter, statusCode int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(apiResponse{
+		Code:    statusCode,
+		Message: msg,
 	})
 }

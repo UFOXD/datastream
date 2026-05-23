@@ -52,13 +52,26 @@ func TestHandleHealth(t *testing.T) {
 		t.Errorf("Expected status 200, got %d", rec.Code)
 	}
 
-	var resp map[string]interface{}
+	var resp struct {
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
 
-	if resp["status"] != "healthy" {
-		t.Errorf("Expected status 'healthy', got '%s'", resp["status"])
+	if resp.Code != 0 {
+		t.Errorf("Expected code 0, got %d", resp.Code)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("Failed to unmarshal data: %v", err)
+	}
+
+	if data["status"] != "healthy" {
+		t.Errorf("Expected status 'healthy', got '%s'", data["status"])
 	}
 }
 
@@ -114,13 +127,26 @@ func TestWriteJSON(t *testing.T) {
 		t.Error("Expected Content-Type application/json")
 	}
 
-	var result map[string]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+	var resp struct {
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
 
-	if result["key"] != "value" {
-		t.Errorf("Expected key 'value', got '%s'", result["key"])
+	if resp.Code != 0 {
+		t.Errorf("Expected code 0, got %d", resp.Code)
+	}
+
+	var inner map[string]string
+	if err := json.Unmarshal(resp.Data, &inner); err != nil {
+		t.Fatalf("Failed to unmarshal data: %v", err)
+	}
+
+	if inner["key"] != "value" {
+		t.Errorf("Expected key 'value', got '%s'", inner["key"])
 	}
 }
 
@@ -134,13 +160,19 @@ func TestWriteError(t *testing.T) {
 		t.Errorf("Expected status 400, got %d", rec.Code)
 	}
 
-	var result map[string]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+	var resp struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
 
-	if result["error"] != "test error" {
-		t.Errorf("Expected error 'test error', got '%s'", result["error"])
+	if resp.Code != http.StatusBadRequest {
+		t.Errorf("Expected code 400, got %d", resp.Code)
+	}
+	if resp.Message != "test error" {
+		t.Errorf("Expected message 'test error', got '%s'", resp.Message)
 	}
 }
 
@@ -272,6 +304,128 @@ func TestSetTaskPositionActuallyUpdates(t *testing.T) {
 	}
 	if pos.SeqNo != 7 {
 		t.Errorf("Expected SeqNo 7, got %d", pos.SeqNo)
+	}
+}
+
+func TestAPIResponseEnvelopeFormat(t *testing.T) {
+	s := NewServer(nil)
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rec.Code)
+	}
+
+	var resp struct {
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	if resp.Code != 0 {
+		t.Errorf("Expected code 0, got %d", resp.Code)
+	}
+	if resp.Message != "success" {
+		t.Errorf("Expected message 'success', got '%s'", resp.Message)
+	}
+	if resp.Data == nil {
+		t.Error("Expected non-nil data field")
+	}
+
+	// Verify nested data contains health info
+	var data map[string]interface{}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("Failed to unmarshal data field: %v", err)
+	}
+	if data["status"] != "healthy" {
+		t.Errorf("Expected data.status 'healthy', got '%v'", data["status"])
+	}
+}
+
+func TestAPIErrorResponseEnvelopeFormat(t *testing.T) {
+	s := NewServer(nil)
+	s.SetTaskManager(pipeline.NewTaskManager())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/nonexistent", nil)
+	rec := httptest.NewRecorder()
+
+	s.router.ServeHTTP(rec, req)
+
+	var resp struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	if resp.Code == 0 {
+		t.Error("Expected non-zero error code")
+	}
+	if resp.Code != http.StatusNotFound {
+		t.Errorf("Expected code 404, got %d", resp.Code)
+	}
+	if resp.Message == "" {
+		t.Error("Expected non-empty error message")
+	}
+}
+
+func TestWriteJSONEnvelopeStructure(t *testing.T) {
+	s := NewServer(nil)
+	rec := httptest.NewRecorder()
+
+	data := map[string]string{"key": "value"}
+	s.writeJSON(rec, http.StatusOK, data)
+
+	var resp struct {
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	if resp.Code != 0 {
+		t.Errorf("Expected code 0, got %d", resp.Code)
+	}
+	if resp.Message != "success" {
+		t.Errorf("Expected message 'success', got '%s'", resp.Message)
+	}
+
+	var innerData map[string]string
+	if err := json.Unmarshal(resp.Data, &innerData); err != nil {
+		t.Fatalf("Failed to unmarshal data: %v", err)
+	}
+	if innerData["key"] != "value" {
+		t.Errorf("Expected key 'value', got '%s'", innerData["key"])
+	}
+}
+
+func TestWriteErrorEnvelopeStructure(t *testing.T) {
+	s := NewServer(nil)
+	rec := httptest.NewRecorder()
+
+	s.writeError(rec, http.StatusBadRequest, "test error")
+
+	var resp struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	if resp.Code != http.StatusBadRequest {
+		t.Errorf("Expected code 400, got %d", resp.Code)
+	}
+	if resp.Message != "test error" {
+		t.Errorf("Expected message 'test error', got '%s'", resp.Message)
 	}
 }
 
