@@ -1,6 +1,7 @@
 package event
 
 import (
+	"bytes"
 	"testing"
 	"time"
 )
@@ -1120,5 +1121,42 @@ func TestHeartbeatEvent_ToChangeEvent_Fields(t *testing.T) {
 	}
 	if evt.ID == "" {
 		t.Error("ID should not be empty")
+	}
+}
+
+func TestPositionGTIDField(t *testing.T) {
+	pos := &Position{
+		GTID:       "3E11FA47-71CA-11E1-9E33-C80AA9429562:1-5",
+		CommitTime: time.Now(),
+	}
+	if pos.GTID == "" {
+		t.Error("GTID should be set")
+	}
+	if pos.IsZero() {
+		t.Error("Position with GTID should not be zero")
+	}
+	cloned := pos.Clone()
+	if cloned.GTID != pos.GTID {
+		t.Errorf("Clone GTID = %q, want %q", cloned.GTID, pos.GTID)
+	}
+}
+
+func TestPositionResumeTokenField(t *testing.T) {
+	token := []byte(`{"_data": "826470..."}`)
+	pos := &Position{
+		ResumeToken: token,
+		CommitTime:  time.Now(),
+	}
+	if pos.ResumeToken == nil {
+		t.Error("ResumeToken should be set")
+	}
+	cloned := pos.Clone()
+	if !bytes.Equal(cloned.ResumeToken, pos.ResumeToken) {
+		t.Error("Clone should copy ResumeToken")
+	}
+	// Mutate original should not affect clone
+	pos.ResumeToken[0] = 0xFF
+	if cloned.ResumeToken[0] == 0xFF {
+		t.Error("Clone ResumeToken should be independent copy")
 	}
 }

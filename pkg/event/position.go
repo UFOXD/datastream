@@ -25,6 +25,12 @@ type Position struct {
 	// SQL Server position
 	ChangeLsn string `json:"changeLsn,omitempty"`
 
+	// MySQL GTID Set (e.g., "3E11FA47-71CA-11E1-9E33-C80AA9429562:1-5")
+	GTID string `json:"gtid,omitempty"`
+
+	// MongoDB Change Stream resume token
+	ResumeToken []byte `json:"resumeToken,omitempty"`
+
 	// Generic timestamp (for comparison)
 	CommitTime time.Time `json:"commitTime"`
 
@@ -77,12 +83,12 @@ func (p *Position) String() string {
 // IsZero returns true if the position is not set.
 func (p *Position) IsZero() bool {
 	return p.CommitTime.IsZero() && p.BinlogFile == "" && p.LSN == 0 &&
-		p.SCN == 0 && p.Timestamp == 0 && p.ChangeLsn == ""
+		p.SCN == 0 && p.Timestamp == 0 && p.ChangeLsn == "" && p.GTID == ""
 }
 
 // Clone returns a deep copy of the Position.
 func (p *Position) Clone() *Position {
-	return &Position{
+	c := &Position{
 		BinlogFile: p.BinlogFile,
 		BinlogPos:  p.BinlogPos,
 		LSN:        p.LSN,
@@ -90,9 +96,15 @@ func (p *Position) Clone() *Position {
 		Timestamp:  p.Timestamp,
 		Order:      p.Order,
 		ChangeLsn:  p.ChangeLsn,
+		GTID:       p.GTID,
 		CommitTime: p.CommitTime,
 		TxID:       p.TxID,
 		SeqNo:      p.SeqNo,
 		Total:      p.Total,
 	}
+	if p.ResumeToken != nil {
+		c.ResumeToken = make([]byte, len(p.ResumeToken))
+		copy(c.ResumeToken, p.ResumeToken)
+	}
+	return c
 }
