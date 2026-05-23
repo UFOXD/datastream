@@ -204,6 +204,7 @@ func (m *mockSource) SetPosition(pos *event.Position) error                 { re
 func (m *mockSource) GetSchema(database, table string) (*event.TableInfo, error) {
 	return nil, nil
 }
+func (m *mockSource) Schemas() map[string]*event.TableInfo { return make(map[string]*event.TableInfo) }
 func (m *mockSource) SyncScope() *SyncScope                                  { return nil }
 func (m *mockSource) AddTables(ctx context.Context, tables []string) error  { return nil }
 func (m *mockSource) RemoveTables(ctx context.Context, tables []string) error { return nil }

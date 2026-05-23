@@ -490,6 +490,7 @@ func (m *mockSource) SyncScope() *source.SyncScope                             {
 func (m *mockSource) AddTables(_ context.Context, _ []string) error             { return nil }
 func (m *mockSource) RemoveTables(_ context.Context, _ []string) error          { return nil }
 func (m *mockSource) ListTables() []string                                      { return nil }
+func (m *mockSource) Schemas() map[string]*event.TableInfo                      { return nil }
 
 // mockSink is a minimal sink.Connector for testing Pipeline lifecycle.
 type mockSink struct{}

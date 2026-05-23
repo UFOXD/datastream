@@ -39,6 +39,9 @@ type Connector interface {
 	// GetSchema returns the schema for a table.
 	GetSchema(database, table string) (*event.TableInfo, error)
 
+	// Schemas returns all cached table schemas.
+	Schemas() map[string]*event.TableInfo
+
 	// SyncScope returns the current sync scope.
 	SyncScope() *SyncScope
 

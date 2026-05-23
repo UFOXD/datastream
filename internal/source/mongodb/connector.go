@@ -348,6 +348,11 @@ func (c *Connector) GetSchema(database, table string) (*event.TableInfo, error) 
 	return info, nil
 }
 
+// Schemas returns all cached table schemas.
+func (c *Connector) Schemas() map[string]*event.TableInfo {
+	return make(map[string]*event.TableInfo)
+}
+
 // SyncScope returns the current sync scope.
 func (c *Connector) SyncScope() *source.SyncScope {
 	c.mu.RLock()
