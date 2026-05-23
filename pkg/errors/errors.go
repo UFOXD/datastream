@@ -5,10 +5,12 @@ import "github.com/pingcap/errors"
 
 // === Common Errors ===
 var (
-	ErrUnknown         = errors.Normalize("unknown error", errors.RFCCodeText("DS:ErrUnknown"))
-	ErrInvalidArgument = errors.Normalize("invalid argument: %s", errors.RFCCodeText("DS:ErrInvalidArgument"))
-	ErrInternal        = errors.Normalize("internal error: %s", errors.RFCCodeText("DS:ErrInternal"))
-	ErrNotImplemented  = errors.Normalize("not implemented", errors.RFCCodeText("DS:ErrNotImplemented"))
+	ErrUnknown           = errors.Normalize("unknown error", errors.RFCCodeText("DS:ErrUnknown"))
+	ErrInvalidArgument   = errors.Normalize("invalid argument: %s", errors.RFCCodeText("DS:ErrInvalidArgument"))
+	ErrInternal          = errors.Normalize("internal error: %s", errors.RFCCodeText("DS:ErrInternal"))
+	ErrNotImplemented    = errors.Normalize("not implemented", errors.RFCCodeText("DS:ErrNotImplemented"))
+	ErrConnectionFailed  = errors.Normalize("connection failed: %s", errors.RFCCodeText("DS:ErrConnectionFailed"))
+	ErrSchemaChanged     = errors.Normalize("schema changed: %s", errors.RFCCodeText("DS:ErrSchemaChanged"))
 )
 
 // === Config Errors ===
