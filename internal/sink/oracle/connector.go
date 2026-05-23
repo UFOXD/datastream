@@ -165,6 +165,9 @@ func (c *Connector) Write(ctx context.Context, events []*event.ChangeEvent) erro
 
 		defer func() {
 			c.mu.Lock()
+			if c.tx != nil {
+				c.tx.Rollback()
+			}
 			c.tx = nil
 			c.mu.Unlock()
 		}()
@@ -243,9 +246,9 @@ func (c *Connector) ApplyDDL(ctx context.Context, ddl *event.ChangeEvent) error 
 	return err
 }
 
-// SupportsTransaction returns true (Oracle supports transactions).
+// SupportsTransaction returns whether transactional writes are enabled.
 func (c *Connector) SupportsTransaction() bool {
-	return true
+	return c.config.UseTransaction
 }
 
 // getExecutor returns the appropriate executor (transaction or database).

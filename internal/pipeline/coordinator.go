@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"time"
 
 	"github.com/UFOXD/datastream/pkg/event"
 )
@@ -210,7 +211,7 @@ func (c *MemoryCoordinator) ListNodes(ctx context.Context) ([]NodeInfo, error) {
 // Heartbeat sends a heartbeat for this node.
 func (c *MemoryCoordinator) Heartbeat(ctx context.Context, nodeID string) error {
 	if node, ok := c.nodes[nodeID]; ok {
-		node.LastSeen = node.LastSeen // Would update timestamp
+		node.LastSeen = time.Now().UnixMilli()
 		c.nodes[nodeID] = node
 	}
 	return nil

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -137,7 +138,7 @@ func NewMultiAlerter(alerters ...Alerter) *MultiAlerter {
 func (a *MultiAlerter) Alert(ctx context.Context, alert *Alert) error {
 	for _, alerter := range a.alerters {
 		if err := alerter.Alert(ctx, alert); err != nil {
-			fmt.Fprintf(io.Discard, "alerter failed: %v", err)
+			fmt.Fprintf(os.Stderr, "alerter failed: %v\n", err)
 		}
 	}
 	return nil
