@@ -164,6 +164,19 @@ func (t *Task) SetPosition(pos *event.Position) {
 	t.UpdatedAt = time.Now()
 }
 
+// Update updates the task's name and/or config.
+func (t *Task) Update(name string, config *Config) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if name != "" {
+		t.Name = name
+	}
+	if config != nil {
+		t.Config = config
+	}
+	t.UpdatedAt = time.Now()
+}
+
 // GetStatus returns the task status.
 func (t *Task) GetStatus() TaskStatus {
 	t.mu.RLock()

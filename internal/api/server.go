@@ -83,10 +83,14 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/tasks", s.createTask).Methods("POST")
 	api.HandleFunc("/tasks/{id}", s.getTask).Methods("GET")
 	api.HandleFunc("/tasks/{id}", s.deleteTask).Methods("DELETE")
+	api.HandleFunc("/tasks/{id}", s.updateTask).Methods("PUT")
 	api.HandleFunc("/tasks/{id}/start", s.startTask).Methods("POST")
 	api.HandleFunc("/tasks/{id}/stop", s.stopTask).Methods("POST")
 	api.HandleFunc("/tasks/{id}/pause", s.pauseTask).Methods("POST")
 	api.HandleFunc("/tasks/{id}/resume", s.resumeTask).Methods("POST")
+	api.HandleFunc("/tasks/{id}/restart", s.restartTask).Methods("POST")
+	api.HandleFunc("/tasks/{id}/status", s.getTaskStatus).Methods("GET")
+	api.HandleFunc("/tasks/{id}/progress", s.getTaskProgress).Methods("GET")
 	api.HandleFunc("/tasks/{id}/position", s.getTaskPosition).Methods("GET")
 	api.HandleFunc("/tasks/{id}/position", s.setTaskPosition).Methods("PUT")
 
@@ -100,6 +104,9 @@ func (s *Server) setupRoutes() {
 
 	// Nodes
 	api.HandleFunc("/nodes", s.listNodes).Methods("GET")
+
+	// Readiness probe
+	s.router.HandleFunc("/ready", s.readyCheck).Methods("GET")
 
 	// Metrics (Prometheus format)
 	s.router.Handle("/metrics", s.handleMetrics())
@@ -292,6 +299,136 @@ func (s *Server) resumeTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, http.StatusOK, map[string]string{"status": "running"})
+}
+
+// updateTask updates a task's configuration.
+func (s *Server) updateTask(w http.ResponseWriter, r *http.Request) {
+	if s.taskMgr == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "task manager not available")
+		return
+	}
+
+	id := mux.Vars(r)["id"]
+	task, err := s.taskMgr.Get(id)
+	if err != nil {
+		s.writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	var req struct {
+		Name   string          `json:"name"`
+		Config *pipeline.Config `json:"config"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	task.Update(req.Name, req.Config)
+
+	s.writeJSON(w, http.StatusOK, task)
+}
+
+// restartTask restarts a task.
+func (s *Server) restartTask(w http.ResponseWriter, r *http.Request) {
+	if s.taskMgr == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "task manager not available")
+		return
+	}
+
+	id := mux.Vars(r)["id"]
+	task, err := s.taskMgr.Get(id)
+	if err != nil {
+		s.writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	if err := task.Stop(r.Context()); err != nil {
+		log.Warn("stop during restart returned error", zap.String("id", id), zap.Error(err))
+	}
+
+	if err := task.Start(r.Context()); err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]string{"status": "restarted"})
+}
+
+// getTaskStatus returns detailed task status.
+func (s *Server) getTaskStatus(w http.ResponseWriter, r *http.Request) {
+	if s.taskMgr == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "task manager not available")
+		return
+	}
+
+	id := mux.Vars(r)["id"]
+	task, err := s.taskMgr.Get(id)
+	if err != nil {
+		s.writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	result := map[string]interface{}{
+		"taskId":    id,
+		"status":    task.GetStatus(),
+		"createdAt": task.CreatedAt,
+		"updatedAt": task.UpdatedAt,
+	}
+
+	if task.Pipeline != nil {
+		pipelineStatus := task.Pipeline.Status()
+		result["pipelineState"] = pipelineStatus.State
+		result["statistics"] = pipelineStatus.Statistics
+	}
+
+	s.writeJSON(w, http.StatusOK, result)
+}
+
+// getTaskProgress returns sync progress for a task.
+func (s *Server) getTaskProgress(w http.ResponseWriter, r *http.Request) {
+	if s.taskMgr == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "task manager not available")
+		return
+	}
+
+	id := mux.Vars(r)["id"]
+	task, err := s.taskMgr.Get(id)
+	if err != nil {
+		s.writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	result := map[string]interface{}{
+		"taskId":   id,
+		"position": task.GetPosition(),
+	}
+
+	if task.Pipeline != nil {
+		stats := task.Pipeline.Status().Statistics
+		result["eventsRead"] = stats.EventsRead
+		result["eventsWritten"] = stats.EventsWritten
+		result["eventsFailed"] = stats.EventsFailed
+		result["currentLag"] = stats.CurrentLag
+	} else {
+		result["eventsRead"] = int64(0)
+		result["eventsWritten"] = int64(0)
+		result["eventsFailed"] = int64(0)
+		result["currentLag"] = int64(0)
+	}
+
+	s.writeJSON(w, http.StatusOK, result)
+}
+
+// readyCheck handles the readiness probe.
+func (s *Server) readyCheck(w http.ResponseWriter, r *http.Request) {
+	ready := s.taskMgr != nil
+	status := http.StatusOK
+	if !ready {
+		status = http.StatusServiceUnavailable
+	}
+	s.writeJSON(w, status, map[string]bool{"ready": ready})
 }
 
 // getTaskPosition gets the position of a task.

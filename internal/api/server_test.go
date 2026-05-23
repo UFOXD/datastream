@@ -429,6 +429,340 @@ func TestWriteErrorEnvelopeStructure(t *testing.T) {
 	}
 }
 
+func TestUpdateTask(t *testing.T) {
+	tm := pipeline.NewTaskManager()
+	if _, err := tm.Create(context.Background(), "task-1", "original-name", nil); err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(tm)
+
+	body := `{"name":"updated-name"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/tasks/task-1", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify the name was updated
+	task, err := tm.Get("task-1")
+	if err != nil {
+		t.Fatalf("failed to get task: %v", err)
+	}
+	if task.Name != "updated-name" {
+		t.Errorf("Expected name 'updated-name', got '%s'", task.Name)
+	}
+}
+
+func TestUpdateTaskNoManager(t *testing.T) {
+	s := NewServer(nil)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/tasks/task-1", strings.NewReader(`{"name":"x"}`))
+	rec := httptest.NewRecorder()
+
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected status 503, got %d", rec.Code)
+	}
+}
+
+func TestUpdateTaskNotFound(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(pipeline.NewTaskManager())
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/tasks/nonexistent", strings.NewReader(`{"name":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404, got %d", rec.Code)
+	}
+}
+
+func TestUpdateTaskInvalidBody(t *testing.T) {
+	tm := pipeline.NewTaskManager()
+	if _, err := tm.Create(context.Background(), "task-1", "test", nil); err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(tm)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/tasks/task-1", strings.NewReader(`not json`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Expected status 400, got %d", rec.Code)
+	}
+}
+
+func TestRestartTaskNoPipeline(t *testing.T) {
+	// A task without a Pipeline cannot be started, so restart should fail on Start.
+	tm := pipeline.NewTaskManager()
+	if _, err := tm.Create(context.Background(), "task-1", "test", nil); err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(tm)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-1/restart", nil)
+	rec := httptest.NewRecorder()
+
+	s.router.ServeHTTP(rec, req)
+
+	// Task has no pipeline, so Start will fail
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("Expected status 500 (no pipeline), got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRestartTaskNoManager(t *testing.T) {
+	s := NewServer(nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-1/restart", nil)
+	rec := httptest.NewRecorder()
+
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected status 503, got %d", rec.Code)
+	}
+}
+
+func TestRestartTaskNotFound(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(pipeline.NewTaskManager())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/nonexistent/restart", nil)
+	rec := httptest.NewRecorder()
+
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404, got %d", rec.Code)
+	}
+}
+
+func TestGetTaskStatus(t *testing.T) {
+	tm := pipeline.NewTaskManager()
+	if _, err := tm.Create(context.Background(), "task-1", "test", nil); err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(tm)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-1/status", nil)
+	rec := httptest.NewRecorder()
+
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+	if resp.Code != 0 {
+		t.Errorf("Expected code 0, got %d", resp.Code)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("Failed to unmarshal data: %v", err)
+	}
+
+	if _, ok := data["status"]; !ok {
+		t.Error("Expected 'status' field in response data")
+	}
+	if data["taskId"] != "task-1" {
+		t.Errorf("Expected taskId 'task-1', got '%v'", data["taskId"])
+	}
+}
+
+func TestGetTaskStatusNoManager(t *testing.T) {
+	s := NewServer(nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-1/status", nil)
+	rec := httptest.NewRecorder()
+
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected status 503, got %d", rec.Code)
+	}
+}
+
+func TestGetTaskStatusNotFound(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(pipeline.NewTaskManager())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/nonexistent/status", nil)
+	rec := httptest.NewRecorder()
+
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404, got %d", rec.Code)
+	}
+}
+
+func TestGetTaskProgress(t *testing.T) {
+	tm := pipeline.NewTaskManager()
+	if _, err := tm.Create(context.Background(), "task-1", "test", nil); err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(tm)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-1/progress", nil)
+	rec := httptest.NewRecorder()
+
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+	if resp.Code != 0 {
+		t.Errorf("Expected code 0, got %d", resp.Code)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("Failed to unmarshal data: %v", err)
+	}
+
+	// Verify expected fields exist
+	if data["taskId"] != "task-1" {
+		t.Errorf("Expected taskId 'task-1', got '%v'", data["taskId"])
+	}
+	if _, ok := data["position"]; !ok {
+		t.Error("Expected 'position' field in response data")
+	}
+	if _, ok := data["eventsRead"]; !ok {
+		t.Error("Expected 'eventsRead' field in response data")
+	}
+	if _, ok := data["eventsWritten"]; !ok {
+		t.Error("Expected 'eventsWritten' field in response data")
+	}
+}
+
+func TestGetTaskProgressNoManager(t *testing.T) {
+	s := NewServer(nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-1/progress", nil)
+	rec := httptest.NewRecorder()
+
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected status 503, got %d", rec.Code)
+	}
+}
+
+func TestGetTaskProgressNotFound(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(pipeline.NewTaskManager())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/nonexistent/progress", nil)
+	rec := httptest.NewRecorder()
+
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404, got %d", rec.Code)
+	}
+}
+
+func TestReadyCheckWithManager(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	s.SetTaskManager(pipeline.NewTaskManager())
+
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	rec := httptest.NewRecorder()
+
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+	if resp.Code != 0 {
+		t.Errorf("Expected code 0, got %d", resp.Code)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("Failed to unmarshal data: %v", err)
+	}
+	if data["ready"] != true {
+		t.Errorf("Expected ready=true, got %v", data["ready"])
+	}
+}
+
+func TestReadyCheckWithoutManager(t *testing.T) {
+	s := NewServer(DefaultServerConfig())
+	// Intentionally do NOT set a task manager
+
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	rec := httptest.NewRecorder()
+
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Expected status 503, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("Failed to unmarshal data: %v", err)
+	}
+	if data["ready"] != false {
+		t.Errorf("Expected ready=false, got %v", data["ready"])
+	}
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
