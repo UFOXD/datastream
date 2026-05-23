@@ -2,6 +2,8 @@ package source
 
 import (
 	"testing"
+
+	"github.com/UFOXD/datastream/pkg/event"
 )
 
 func TestSnapshotConcurrencyConfig_Validate(t *testing.T) {
@@ -344,5 +346,53 @@ func TestDefaultSnapshotConcurrencyConfig(t *testing.T) {
 	// Default config must pass validation
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("DefaultSnapshotConcurrencyConfig().Validate() = %v, want nil", err)
+	}
+}
+
+func TestSnapshotModeWhenNeeded(t *testing.T) {
+	// when_needed should behave like initial: snapshot when no position exists
+	cfg := &SnapshotConfig{Mode: SnapshotModeWhenNeeded}
+
+	// No saved position -> should snapshot
+	if !cfg.ShouldSnapshot(nil) {
+		t.Error("ShouldSnapshot(nil) = false, want true for when_needed with no saved position")
+	}
+
+	// Saved position exists -> should NOT snapshot
+	pos := &event.Position{BinlogFile: "mysql-bin.000001"}
+	if cfg.ShouldSnapshot(pos) {
+		t.Error("ShouldSnapshot(pos) = true, want false for when_needed with saved position")
+	}
+}
+
+func TestShouldSnapshot(t *testing.T) {
+	pos := &event.Position{BinlogFile: "mysql-bin.000001"}
+
+	tests := []struct {
+		name     string
+		mode     SnapshotMode
+		savedPos *event.Position
+		want     bool
+	}{
+		{name: "never with nil pos", mode: SnapshotModeNever, savedPos: nil, want: false},
+		{name: "never with pos", mode: SnapshotModeNever, savedPos: pos, want: false},
+		{name: "always with nil pos", mode: SnapshotModeAlways, savedPos: nil, want: true},
+		{name: "always with pos", mode: SnapshotModeAlways, savedPos: pos, want: true},
+		{name: "initial with nil pos", mode: SnapshotModeInitial, savedPos: nil, want: true},
+		{name: "initial with pos", mode: SnapshotModeInitial, savedPos: pos, want: false},
+		{name: "when_needed with nil pos", mode: SnapshotModeWhenNeeded, savedPos: nil, want: true},
+		{name: "when_needed with pos", mode: SnapshotModeWhenNeeded, savedPos: pos, want: false},
+		{name: "unknown mode with nil pos", mode: SnapshotMode("unknown"), savedPos: nil, want: false},
+		{name: "unknown mode with pos", mode: SnapshotMode("unknown"), savedPos: pos, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &SnapshotConfig{Mode: tt.mode}
+			got := cfg.ShouldSnapshot(tt.savedPos)
+			if got != tt.want {
+				t.Errorf("ShouldSnapshot() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

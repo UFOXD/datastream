@@ -108,17 +108,33 @@ type TableFilter struct {
 
 // SnapshotConfig configures the initial snapshot behavior.
 type SnapshotConfig struct {
-	Mode    SnapshotMode `json:"mode"`    // never, initial, always
+	Mode    SnapshotMode `json:"mode"`    // never, initial, always, when_needed
 	Threads int          `json:"threads"` // Parallel snapshot threads
+}
+
+// ShouldSnapshot determines whether a snapshot should be taken based on the
+// configured mode and whether a saved position exists.
+func (c *SnapshotConfig) ShouldSnapshot(savedPos *event.Position) bool {
+	switch c.Mode {
+	case SnapshotModeNever:
+		return false
+	case SnapshotModeAlways:
+		return true
+	case SnapshotModeInitial, SnapshotModeWhenNeeded:
+		return savedPos == nil
+	default:
+		return false
+	}
 }
 
 // SnapshotMode defines when to take a snapshot.
 type SnapshotMode string
 
 const (
-	SnapshotModeNever   SnapshotMode = "never"   // Never take snapshot
-	SnapshotModeInitial SnapshotMode = "initial" // Snapshot on first start
-	SnapshotModeAlways  SnapshotMode = "always"  // Always snapshot on start
+	SnapshotModeNever      SnapshotMode = "never"       // Never take snapshot
+	SnapshotModeInitial    SnapshotMode = "initial"      // Snapshot on first start
+	SnapshotModeAlways     SnapshotMode = "always"       // Always snapshot on start
+	SnapshotModeWhenNeeded SnapshotMode = "when_needed"  // Snapshot only when no saved position exists
 )
 
 // OffsetConfig configures offset storage.
