@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package datastream.cache;
+
+option go_package = "github.com/UFOXD/datastream/internal/cache";
+
+message CacheEvent {
+    string gtid = 1;
+    int64  event_seq = 2;
+    bool   is_begin = 3;
+    bool   is_commit = 4;
+    bytes  payload = 5;
+    int64  timestamp_ms = 6;
+}
