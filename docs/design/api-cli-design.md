@@ -23,7 +23,7 @@ API/CLI Layer 是 DataStream 的用户交互层，提供 REST API、命令行工
 │  ┌─────────────────────────────────────────────────────────────┐ │
 │  │                    HTTP Server                               │ │
 │  │                                                               │ │
-│  │  - Gin/Echo 框架                                             │ │
+│  │  - gorilla/mux 路由                                             │ │
 │  │  - 中间件：认证、日志、限流、CORS                            │ │
 │  │  - Prometheus metrics endpoint                               │ │
 │  │  - Health check endpoint                                     │ │
@@ -251,12 +251,12 @@ import (
     "context"
     "net/http"
 
-    "github.com/gin-gonic/gin"
+    "github.com/gorilla/mux"
 )
 
 // Server HTTP API 服务器
 type Server struct {
-    engine      *gin.Engine
+    router      *mux.Router
     httpServer  *http.Server
 
     // 依赖
@@ -891,7 +891,7 @@ output = "table"  # table, json, yaml
 
 | 决策项 | 选择 | 说明 |
 |--------|------|------|
-| HTTP 框架 | Gin | 高性能，生态丰富 |
+| HTTP 框架 | gorilla/mux | 轻量路由，Go 生态主流 |
 | CLI 框架 | Cobra | 标准 Go CLI 框架 |
 | API 版本 | v1 | URL 路径版本控制 |
 | 认证方式 | JWT | 可选，默认关闭 |

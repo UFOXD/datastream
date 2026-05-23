@@ -24,10 +24,10 @@ pkg/
 ├── version/         # 版本信息
 │   └── version.go
 └── utils/           # 通用工具
-    ├── crypto.go    # 加密工具
     ├── retry.go     # 重试工具
     ├── pool.go      # 对象池
-    └── sync.go      # 同步原语
+    ├── hash.go      # Hash 工具
+    └── string.go    # 字符串工具
 ```
 
 ---
