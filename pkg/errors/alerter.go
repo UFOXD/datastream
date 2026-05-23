@@ -52,7 +52,7 @@ func NewLogAlerter(w io.Writer) *LogAlerter {
 func (a *LogAlerter) Alert(_ context.Context, alert *Alert) error {
 	ts := alert.Timestamp
 	if ts.IsZero() {
-		ts = time.Now()
+		ts = time.Now() // local copy, does not mutate caller's Alert
 	}
 
 	var sb strings.Builder
@@ -90,11 +90,12 @@ func NewWebhookAlerter(url string) *WebhookAlerter {
 
 // Alert sends the alert as a JSON payload via HTTP POST.
 func (a *WebhookAlerter) Alert(ctx context.Context, alert *Alert) error {
-	if alert.Timestamp.IsZero() {
-		alert.Timestamp = time.Now()
+	toSend := *alert
+	if toSend.Timestamp.IsZero() {
+		toSend.Timestamp = time.Now()
 	}
 
-	body, err := json.Marshal(alert)
+	body, err := json.Marshal(&toSend)
 	if err != nil {
 		return fmt.Errorf("marshal alert: %w", err)
 	}
@@ -131,13 +132,13 @@ func NewMultiAlerter(alerters ...Alerter) *MultiAlerter {
 	return &MultiAlerter{alerters: alerters}
 }
 
-// Alert sends the alert to all underlying alerters, returning the first error.
+// Alert sends the alert to all underlying alerters (fire-and-forget).
+// Errors from individual alerters are logged but not returned.
 func (a *MultiAlerter) Alert(ctx context.Context, alert *Alert) error {
-	var firstErr error
 	for _, alerter := range a.alerters {
-		if err := alerter.Alert(ctx, alert); err != nil && firstErr == nil {
-			firstErr = err
+		if err := alerter.Alert(ctx, alert); err != nil {
+			fmt.Fprintf(io.Discard, "alerter failed: %v", err)
 		}
 	}
-	return firstErr
+	return nil
 }

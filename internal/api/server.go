@@ -215,7 +215,7 @@ func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	s.writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // startTask starts a task.
