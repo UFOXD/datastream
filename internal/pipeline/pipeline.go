@@ -30,6 +30,8 @@ type Pipeline struct {
 	mu          sync.RWMutex
 	stopCh      chan struct{}
 	stopOnce    sync.Once
+	pauseCh     chan struct{}
+	resumeCh    chan struct{}
 	wg          sync.WaitGroup
 
 	// Pre-cached metric label vectors filled by precacheLabels (Stage 3).
@@ -280,6 +282,8 @@ func (p *Pipeline) Start(ctx context.Context) error {
 
 	p.mu.Lock()
 	p.status.State = StateRunning
+	p.pauseCh = make(chan struct{})
+	p.resumeCh = make(chan struct{})
 	p.mu.Unlock()
 
 	// Start event processing
@@ -337,6 +341,7 @@ func (p *Pipeline) Pause(ctx context.Context) error {
 	}
 
 	p.status.State = StatePaused
+	close(p.pauseCh)
 	log.Info("pipeline paused", zap.String("id", p.id))
 	return nil
 }
@@ -351,6 +356,9 @@ func (p *Pipeline) Resume(ctx context.Context) error {
 	}
 
 	p.status.State = StateRunning
+	close(p.resumeCh)
+	p.pauseCh = make(chan struct{})
+	p.resumeCh = make(chan struct{})
 	log.Info("pipeline resumed", zap.String("id", p.id))
 	return nil
 }
@@ -388,6 +396,21 @@ func (p *Pipeline) run(ctx context.Context) {
 			if !ok {
 				log.Info("source events channel closed", zap.String("id", p.id))
 				return
+			}
+			// Block while paused
+			p.mu.RLock()
+			isPaused := p.status.State == StatePaused
+			resumeCh := p.resumeCh
+			p.mu.RUnlock()
+			if isPaused {
+				select {
+				case <-resumeCh:
+					// resumed, continue processing
+				case <-p.stopCh:
+					return
+				case <-ctx.Done():
+					return
+				}
 			}
 			p.instrumentEvent(e)
 			p.processEvent(ctx, e)

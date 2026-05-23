@@ -570,3 +570,78 @@ func TestTaskManager_SetStatsCollector_WrapsAndRegisters(t *testing.T) {
 		t.Errorf("WrapSink with disabled metrics should return arg unchanged, got %v", wrapped)
 	}
 }
+
+func TestPipelinePauseStopsProcessing(t *testing.T) {
+	metrics.ResetForTest()
+	r := prometheus.NewRegistry()
+	metrics.MustRegisterAll(r)
+	t.Cleanup(func() {
+		metrics.ResetForTest()
+		metrics.MustRegisterAll(prometheus.DefaultRegisterer)
+	})
+
+	cfg := &Config{ID: "pause-test", Name: "pause-test"}
+	p := New(cfg)
+	p.SetCluster("c1")
+
+	src := newMockSource()
+	p.SetSource(src)
+	p.AddSink(&mockSink{})
+
+	ctx := context.Background()
+	if err := p.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Send an event and verify it gets processed.
+	src.eventsCh <- &event.ChangeEvent{
+		ID:        "e1",
+		Type:      event.EventTypeInsert,
+		Timestamp: time.Now(),
+	}
+	// Give the run loop time to process
+	time.Sleep(100 * time.Millisecond)
+
+	written1 := p.Status().Statistics.EventsWritten
+	if written1 != 1 {
+		t.Fatalf("expected EventsWritten=1 after first event, got %d", written1)
+	}
+
+	// Pause the pipeline
+	if err := p.Pause(ctx); err != nil {
+		t.Fatalf("Pause failed: %v", err)
+	}
+
+	// Send another event while paused
+	go func() {
+		src.eventsCh <- &event.ChangeEvent{
+			ID:        "e2",
+			Type:      event.EventTypeInsert,
+			Timestamp: time.Now(),
+		}
+	}()
+
+	// Wait and verify EventsWritten does NOT increase
+	time.Sleep(200 * time.Millisecond)
+	written2 := p.Status().Statistics.EventsWritten
+	if written2 != 1 {
+		t.Errorf("expected EventsWritten=1 while paused, got %d (pause did not stop processing)", written2)
+	}
+
+	// Resume the pipeline
+	if err := p.Resume(ctx); err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+
+	// After resume, the queued event should get processed
+	time.Sleep(200 * time.Millisecond)
+	written3 := p.Status().Statistics.EventsWritten
+	if written3 != 2 {
+		t.Errorf("expected EventsWritten=2 after resume, got %d", written3)
+	}
+
+	// Stop the pipeline
+	if err := p.Stop(ctx); err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+}
