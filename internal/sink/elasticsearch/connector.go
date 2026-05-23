@@ -207,6 +207,11 @@ func (c *Connector) SupportsDDL() bool {
 	return false
 }
 
+// ApplyDDL is a no-op for Elasticsearch — schema is handled dynamically.
+func (c *Connector) ApplyDDL(_ context.Context, _ *event.ChangeEvent) error {
+	return nil
+}
+
 // SupportsTransaction returns false — Elasticsearch uses bulk writes.
 func (c *Connector) SupportsTransaction() bool {
 	return false

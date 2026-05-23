@@ -207,6 +207,11 @@ func (c *Connector) SupportsDDL() bool {
 	return true
 }
 
+// ApplyDDL is a no-op for Kafka — DDL events are serialized as regular messages.
+func (c *Connector) ApplyDDL(_ context.Context, _ *event.ChangeEvent) error {
+	return nil
+}
+
 // SupportsTransaction returns true (Kafka supports transactions).
 func (c *Connector) SupportsTransaction() bool {
 	return true

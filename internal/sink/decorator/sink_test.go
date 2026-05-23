@@ -29,6 +29,7 @@ func (m *mockSink) Status() sink.Status                                { return 
 func (m *mockSink) Flush(ctx context.Context) error                    { return nil }
 func (m *mockSink) GetPosition() *event.Position                       { return nil }
 func (m *mockSink) SupportsDDL() bool                                  { return false }
+func (m *mockSink) ApplyDDL(_ context.Context, _ *event.ChangeEvent) error { return nil }
 func (m *mockSink) SupportsTransaction() bool                          { return false }
 func (m *mockSink) Write(ctx context.Context, events []*event.ChangeEvent) error {
 	m.writeCalls++

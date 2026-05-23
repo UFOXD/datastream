@@ -36,6 +36,11 @@ type Connector interface {
 	// SupportsDDL returns true if the sink supports DDL events.
 	SupportsDDL() bool
 
+	// ApplyDDL applies a DDL event to the sink. Sinks that do not support DDL
+	// should return nil. The ddl event's Metadata["sql"] field contains the
+	// SQL statement to execute.
+	ApplyDDL(ctx context.Context, ddl *event.ChangeEvent) error
+
 	// SupportsTransaction returns true if the sink supports transactions.
 	SupportsTransaction() bool
 }

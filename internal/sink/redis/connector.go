@@ -292,6 +292,9 @@ func (c *Connector) GetPosition() *event.Position {
 // SupportsDDL returns false — Redis has no schema.
 func (c *Connector) SupportsDDL() bool { return false }
 
+// ApplyDDL is a no-op for Redis — Redis has no schema.
+func (c *Connector) ApplyDDL(_ context.Context, _ *event.ChangeEvent) error { return nil }
+
 // SupportsTransaction returns false — Redis uses pipelining.
 func (c *Connector) SupportsTransaction() bool { return false }
 

@@ -73,6 +73,9 @@ func (m *MetricsSink) Status() sink.Status                  { return m.inner.Sta
 func (m *MetricsSink) Flush(ctx context.Context) error      { return m.inner.Flush(ctx) }
 func (m *MetricsSink) GetPosition() *event.Position         { return m.inner.GetPosition() }
 func (m *MetricsSink) SupportsDDL() bool                    { return m.inner.SupportsDDL() }
+func (m *MetricsSink) ApplyDDL(ctx context.Context, ddl *event.ChangeEvent) error {
+	return m.inner.ApplyDDL(ctx, ddl)
+}
 func (m *MetricsSink) SupportsTransaction() bool            { return m.inner.SupportsTransaction() }
 
 // Write — primary instrumented path.

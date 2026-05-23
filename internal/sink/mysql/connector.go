@@ -270,6 +270,19 @@ func (c *Connector) SupportsDDL() bool {
 	return true
 }
 
+// ApplyDDL applies a DDL event to MySQL.
+func (c *Connector) ApplyDDL(ctx context.Context, ddl *event.ChangeEvent) error {
+	if ddl == nil || ddl.Metadata == nil {
+		return nil
+	}
+	sql, ok := ddl.Metadata["sql"]
+	if !ok || sql == "" {
+		return nil
+	}
+	_, err := c.db.ExecContext(ctx, sql)
+	return err
+}
+
 // SupportsTransaction returns true (MySQL supports transactions).
 func (c *Connector) SupportsTransaction() bool {
 	return c.config.UseTransaction

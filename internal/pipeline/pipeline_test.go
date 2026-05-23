@@ -504,6 +504,7 @@ func (m *mockSink) Write(_ context.Context, _ []*event.ChangeEvent) error       
 func (m *mockSink) Flush(_ context.Context) error                                 { return nil }
 func (m *mockSink) GetPosition() *event.Position                                  { return nil }
 func (m *mockSink) SupportsDDL() bool                                             { return false }
+func (m *mockSink) ApplyDDL(_ context.Context, _ *event.ChangeEvent) error        { return nil }
 func (m *mockSink) SupportsTransaction() bool                                     { return false }
 
 // errMockSink is a sink.Connector whose Write always returns an error.
@@ -522,6 +523,7 @@ func (m *errMockSink) Write(_ context.Context, _ []*event.ChangeEvent) error    
 func (m *errMockSink) Flush(_ context.Context) error                                 { return nil }
 func (m *errMockSink) GetPosition() *event.Position                                  { return nil }
 func (m *errMockSink) SupportsDDL() bool                                             { return false }
+func (m *errMockSink) ApplyDDL(_ context.Context, _ *event.ChangeEvent) error        { return nil }
 func (m *errMockSink) SupportsTransaction() bool                                     { return false }
 
 func TestEventsWrittenNotIncrementedOnError(t *testing.T) {
