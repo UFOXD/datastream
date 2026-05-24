@@ -91,6 +91,16 @@ func (c *CLI) buildTaskCommand() *cobra.Command {
 	cmd.AddCommand(c.buildTaskStartCommand())
 	cmd.AddCommand(c.buildTaskStopCommand())
 
+	// Table lifecycle management commands
+	cmd.AddCommand(c.buildTaskDetailCommand())
+	cmd.AddCommand(c.buildTaskErrorsCommand())
+	cmd.AddCommand(c.buildTaskRestartTableCommand())
+	cmd.AddCommand(c.buildTaskPauseTableCommand())
+	cmd.AddCommand(c.buildTaskResumeTableCommand())
+	cmd.AddCommand(c.buildTaskSkipErrorCommand())
+	cmd.AddCommand(c.buildTaskRetryTableCommand())
+	cmd.AddCommand(c.buildTaskTableLifecycleCommand())
+
 	return cmd
 }
 
