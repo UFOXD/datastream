@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/UFOXD/datastream/internal/lifecycle"
 	"github.com/UFOXD/datastream/internal/pipeline"
 	"github.com/UFOXD/datastream/internal/source"
 	"github.com/UFOXD/datastream/pkg/event"
@@ -24,6 +25,7 @@ type Server struct {
 	taskMgr      *pipeline.TaskManager
 	coordinator  pipeline.Coordinator
 	TableManager *source.TableManager
+	scheduler    *lifecycle.SnapshotScheduler
 	config       *ServerConfig
 }
 
@@ -71,6 +73,11 @@ func (s *Server) SetCoordinator(c pipeline.Coordinator) {
 	s.coordinator = c
 }
 
+// SetScheduler sets the lifecycle snapshot scheduler.
+func (s *Server) SetScheduler(sched *lifecycle.SnapshotScheduler) {
+	s.scheduler = sched
+}
+
 // setupRoutes sets up the API routes.
 func (s *Server) setupRoutes() {
 	// Health check
@@ -102,6 +109,16 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/tables/{db}/{table}", s.getTableState).Methods("GET")
 	api.HandleFunc("/tables/{db}/{table}/pause", s.pauseTable).Methods("POST")
 	api.HandleFunc("/tables/{db}/{table}/resume", s.resumeTable).Methods("POST")
+
+	// Table Lifecycle
+	api.HandleFunc("/tasks/{id}/detail", s.getTaskDetail).Methods("GET")
+	api.HandleFunc("/tasks/{id}/tables/errors", s.getTableErrors).Methods("GET")
+	api.HandleFunc("/tasks/{id}/tables/restart", s.restartTables).Methods("POST")
+	api.HandleFunc("/tasks/{id}/tables/{db}.{table}/lifecycle", s.getTableLifecycleState).Methods("GET")
+	api.HandleFunc("/tasks/{id}/tables/{db}.{table}/pause-lifecycle", s.pauseTableLifecycle).Methods("POST")
+	api.HandleFunc("/tasks/{id}/tables/{db}.{table}/resume-lifecycle", s.resumeTableLifecycle).Methods("POST")
+	api.HandleFunc("/tasks/{id}/tables/{db}.{table}/retry", s.retryTableLifecycle).Methods("POST")
+	api.HandleFunc("/tasks/{id}/tables/{db}.{table}/skip-error", s.skipTableError).Methods("POST")
 
 	// Nodes
 	api.HandleFunc("/nodes", s.listNodes).Methods("GET")

@@ -31,6 +31,16 @@ func NewSnapshotScheduler(config *SchedulerConfig, taskID string, store source.T
 	}
 }
 
+// Store returns the underlying TableLifecycleStore.
+func (s *SnapshotScheduler) Store() source.TableLifecycleStore {
+	return s.store
+}
+
+// TaskID returns the task ID associated with this scheduler.
+func (s *SnapshotScheduler) TaskID() string {
+	return s.taskID
+}
+
 // AddTable registers a table and sets it to pending state.
 func (s *SnapshotScheduler) AddTable(tableID source.TableID, snapshotPos *event.Position) error {
 	s.mu.Lock()
