@@ -1,6 +1,6 @@
 # DataStream Project Memory
 
-> Last Updated: 2026-05-13
+> Last Updated: 2026-05-26
 
 ## Project Overview
 
@@ -8,15 +8,63 @@ DataStream is a Go-based CDC (Change Data Capture) platform that refactors Debez
 
 ## Current Status
 
-**Phase:** Phase 10 Complete (Dynamic Table Management)
-**Branch:** `feature/phase6-benchmarks-deployment`
+**Phase:** Phase 11 — 表级独立生命周期 + Reviewer 修复
+**Branch:** `main`
 **Build Status:** PASSING
-**Test Status:** ALL PASSING (36 packages)
-**Overall Completion:** ~99%
+**Test Status:** ALL PASSING (43 packages)
+**Total Commits:** 134
+**Source Files:** 153 (不含生成代码和测试)
+**Overall Completion:** 核心功能完成，表级生命周期代码已实现，Schema History + 缓冲完整性阻塞中
 
-**Last Updated:** 2026-05-13
+**Last Updated:** 2026-05-26
 
 ---
+
+## 📋 当前卡点与待办
+
+### ⛔ 阻塞项（必须解决才能上线）
+
+详细设计文档：[`docs/design/schema-history-and-cache-integrity-design.md`](docs/design/schema-history-and-cache-integrity-design.md)
+
+| 编号 | 问题 | 说明 | 待决策 |
+|------|------|------|--------|
+| **B1** | 缓冲文件事务完整性 | 大事务跨多表文件写一半崩溃后重复。需要事务粒度原子性 | WAL 单文件 vs 分文件+committed_gtids |
+| **B2** | Schema History | 自维护表结构链，DDL 变更后存完整 TableInfo，重启 Recover | 存储后端 + 序列化格式未决 |
+| **B3** | Parser `ApplyDDL()` | Parser 拿旧表结构+DDL 产出新完整 TableInfo。MySQL CHANGE/AFTER/FIRST 未实现 | — |
+| **B4** | DDL 应用状态跟踪 | DDLRecord 跟踪 pending→applying→completed/failed，成功后才更新 Tables | 已设计，待实现 |
+
+### 📌 重要待办
+
+| 优先级 | 事项 | 设计文档 |
+|--------|------|---------|
+| P1 | S3 全量中转路径实现 | [`table-lifecycle-design.md`](docs/design/table-lifecycle-design.md) §5.3 |
+| P1 | TemporalConverter 时区 UTC 归一化 | [`oracle-dml-parser-design.md`](docs/design/oracle-dml-parser-design.md) §11 |
+| P1 | Oracle parser ALTER 重写（文本匹配→ANTLR） | [`schema-history-and-cache-integrity-design.md`](docs/design/schema-history-and-cache-integrity-design.md) §4.3 |
+| P1 | PG/SQLServer parser ALTER 增强 | 同上 |
+| P2 | Source connector Schemas() 从 stub 改委托 | Reviewer 发现 S2 |
+| P2 | Source connector 测试覆盖率 15-24% → 60%+ | [`test-strategy-design.md`](docs/design/test-strategy-design.md) |
+| P2 | fsync 模式配置化 + CRC32 校验 + Read 错误传播 | 跟随 B1 一起做 |
+| P2 | 废弃 schema_cache.go | 跟随 B2 完成后迁移删除 |
+
+### ✅ 2026-05-23~24 完成的工作
+
+| 分类 | 工作 | Commits |
+|------|------|---------|
+| IPv6 修复 | 8 个连接器 `net.JoinHostPort` | 1 |
+| Oracle DML Parser | 正则→状态机重写 + 大写/空白修复 + 设计文档（含时区策略） | 3 |
+| Reviewer 修复 P0 | Pipeline Stop panic, Pause 假暂停 | 2 |
+| Reviewer 修复 P1 | EventsWritten 计数, API setTaskPosition, etcd Election 缓存 | 3 |
+| Reviewer 修复 P2 | Source Schemas(), Sink ApplyDDL, API 响应信封格式 | 3 |
+| 功能补全 | when_needed 快照模式, 设计文档更新(Gin→mux, crypto/sync) | 2 |
+| Error Handling | DataStreamError 分类 + CircuitBreaker + Alerter + Reviewer 修复 | 4 |
+| API 端点 | 11 个新端点（task 管理 + 集群 + 诊断）| 2 |
+| 新增 Sink | Oracle Sink + SQL Server Sink + Reviewer 修复 | 3 |
+| 测试覆盖率 | event 100%, pipeline 92%, api 89% | 3 |
+| 表级生命周期 SP1 | event.Position 扩展, TableLifecycle 状态机, Store, GlobalMinPosition | 4 |
+| 表级生命周期 SP2 | CacheEvent Protobuf, LocalBackend, CacheSize, CLI decode | 6 |
+| 表级生命周期 SP3 | HashChunker, BinlogConsumer, CatchingUpReplayer, SnapshotScheduler, Pipeline 集成 | 5 |
+| 表级生命周期 SP4 | 8 个生命周期 API + 8 个 CLI 命令 + 6 个 Prometheus 指标 | 3 |
+| 设计文档 | 表级生命周期设计 + Schema History 设计（草案）| 2+ |
 
 ## 📊 Project Completion Matrix
 
