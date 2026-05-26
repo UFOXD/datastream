@@ -174,35 +174,100 @@ Debezium Schema History:
 
 ### 3.3 DataStream 的设计
 
-#### 核心流程
+#### Parser 接口
 
-```
-CREATE TABLE:
-  DDL → parser.Parse() → 完整 TableInfo（含所有 Column）
-  → Tables.Put(tableInfo)
-  → history.Record(position, 完整 TableInfo)
+Parser 不只产出 delta，直接负责合成新的完整 TableInfo：
 
-ALTER TABLE:
-  DDL → parser.Parse() → delta（AddedColumns/DroppedColumns/ModifiedColumns）
-  → Tables.Apply(delta) → 演算出新的完整 TableInfo
-  → history.Record(position, 新的完整 TableInfo)
+```go
+// ApplyDDL 解析 DDL 并基于旧表结构产出完整的新表结构
+// oldTable: CREATE 时为 nil，ALTER 时传入旧结构
+// 返回: DDLResult 包含 delta（供过滤/映射用）+ 新的完整 TableInfo（供 Schema History 存储）
+func (p *Parser) ApplyDDL(oldTable *event.TableInfo, ddl string) (*DDLResult, error)
 
-DROP TABLE:
-  → Tables.Remove(tableID)
-  → history.Record(position, drop)
+type DDLResult struct {
+    Type         DDLType           // CREATE / ALTER / DROP
+    Database     string
+    Table        string
 
-重启恢复:
-  → history.Recover(offsets)
-  → 按位点顺序加载所有 Record
-  → position ≤ connector offset 的 apply 到内存 Tables
-  → 内存 Tables 精确反映该 offset 时刻的表结构
+    // delta — 下游 DDL 过滤/表名映射/路由决策用
+    TableChanges *TableChanges     // AddedColumns, DroppedColumns, ModifiedColumns
 
-DML 事件处理:
-  → 从内存 Tables 取 schema（不查源库 INFORMATION_SCHEMA）
-  → 用 schema 解析 binlog 行数据
+    // 完整结果 — Schema History 存储用
+    NewTableInfo *event.TableInfo  // ALTER/CREATE 后的完整表结构；DROP 时 nil
+}
 ```
 
-**注意：history 存的是 Apply 后的完整 TableInfo，不是 parser 的原始 delta。** 这样 Recover 时只需要反序列化完整 TableInfo 直接覆盖，不需要重放 delta 演算。
+- **CREATE**：`oldTable = nil`，parser 从 DDL 构建完整 TableInfo
+- **ALTER**：`oldTable` 传入当前内存中的旧结构，parser 解析 delta 后应用到旧结构上产出新 TableInfo
+- **DROP**：`NewTableInfo = nil`
+
+为什么由 Parser 合成而非外部 `Tables.Apply()`：
+- Parser 理解 SQL 语义（`AFTER col_name`、`CHANGE old new type`），这些是 SQL 解析器的专业领域
+- `Tables` 只是数据结构容器，不应该理解 SQL 语法
+
+#### DDL 应用状态跟踪
+
+DDL 到目标端执行是异步的（可能耗时很长，比如大表加索引），需要跟踪状态：
+
+```go
+type DDLRecord struct {
+    // 来源
+    Position     *event.Position
+    Database     string
+    Table        string
+    DDL          string               // 原始 DDL 语句
+
+    // Parser 产出
+    Result       *DDLResult           // delta + NewTableInfo
+
+    // 应用状态
+    Status       DDLStatus
+    AppliedAt    *time.Time           // 开始执行时间
+    CompletedAt  *time.Time           // 执行完成时间
+    Error        string               // 失败原因
+    RetryCount   int
+}
+
+type DDLStatus string
+
+const (
+    DDLStatusPending   DDLStatus = "pending"    // 已解析，未发到目标端
+    DDLStatusApplying  DDLStatus = "applying"   // 目标端执行中
+    DDLStatusCompleted DDLStatus = "completed"  // 目标端执行成功
+    DDLStatusFailed    DDLStatus = "failed"     // 目标端执行失败
+    DDLStatusSkipped   DDLStatus = "skipped"    // 被 DDL 过滤规则跳过
+)
+```
+
+#### 核心流程（修正版）
+
+**关键原则：目标端 DDL 执行成功后才更新内存 Tables 和 Schema History。**
+
+```
+1. DDL binlog event 到达
+2. parser.ApplyDDL(oldTableInfo, ddl) → DDLResult (delta + NewTableInfo)
+3. 记录 DDLRecord (status = pending)
+4. Pipeline DDL 过滤/映射决策（基于 delta）
+   ├── 被过滤跳过 → status = skipped → 流程结束（Tables 不变）
+   └── 通过 → 继续
+5. 发到目标端执行 (status = applying)
+6a. 执行成功:
+    → status = completed
+    → Tables.Put(NewTableInfo)              ← 此刻才更新内存
+    → SchemaHistory.Record(position, NewTableInfo) ← 此刻才持久化
+    → 后续 DML 使用新 schema
+6b. 执行失败:
+    → status = failed
+    → Tables 不变（保持旧 schema）
+    → 该表进入 error 状态，暂停增量事件处理
+    → 等待人工介入（修复后 retry 或 skip）
+```
+
+**DDL 失败后的行为：**
+- 内存 Tables 停留在旧版本
+- 源端后续 DML 使用新列结构但 Tables 里是旧结构 → 列数不匹配 → 自然触发解析错误
+- 表进入 error 状态，等待运维处理
+- 运维选项：手动修复目标端 schema 后 retry DDL / 跳过该 DDL 并手动同步 schema
 
 #### SchemaHistoryRecord
 
@@ -213,11 +278,14 @@ type SchemaHistoryRecord struct {
     Schema       string              // PostgreSQL/Oracle 的 schema
     Table        string
     DDL          string              // 原始 DDL 语句
-    TableInfo    *event.TableInfo    // 变更后的完整表结构（CREATE/ALTER 时非 nil）
+    TableInfo    *event.TableInfo    // 目标端执行成功后的完整表结构（DROP 时 nil）
     ChangeType   string              // "CREATE" / "ALTER" / "DROP"
+    DDLStatus    DDLStatus           // completed / skipped
     Timestamp    time.Time
 }
 ```
+
+**注意：只有 `completed` 和 `skipped` 状态的 DDL 才会写入 Schema History。`pending`/`applying`/`failed` 不写入——因为表结构实际上没变。**
 
 #### SchemaHistory 接口
 
@@ -241,8 +309,9 @@ type Tables struct {
 func (t *Tables) Put(info *event.TableInfo)
 func (t *Tables) Get(database, table string) *event.TableInfo
 func (t *Tables) Remove(database, table string)
-func (t *Tables) Apply(delta *parser.TableChanges) *event.TableInfo  // 关键：delta → 新完整 TableInfo
 ```
+
+注意：`Apply()` 方法不再需要——合成逻辑由 Parser 的 `ApplyDDL()` 完成。Tables 只是一个纯存储容器。
 
 #### 初始 Schema 来源
 
@@ -340,7 +409,7 @@ ALTER TABLE t CHANGE old_col new_col INT NOT NULL DEFAULT 0 AFTER another_col;
 | `ALTER COLUMN` 不处理 | 类型变更未解析 |
 | 列类型不提取 | 同 PostgreSQL |
 
-### 4.4 Tables.Apply() 的列位置处理
+### 4.4 列位置处理（Parser 内部实现）
 
 MySQL 支持通过 ALTER TABLE 改变列的物理位置，这影响 binlog 中行数据的列顺序。
 
@@ -353,29 +422,14 @@ ALTER TABLE t MODIFY b INT FIRST;
 -- binlog 行数据: [b_val, a_val, c_val]  ← 列顺序变了！
 ```
 
-`Tables.Apply()` 必须正确处理位置变更：
+列位置处理在 `parser.ApplyDDL()` 内部完成——parser 拿到旧 TableInfo 和 DDL，解析出位置指令后重排列数组，产出新 TableInfo。外部调用方不感知位置变更的细节。
 
-```go
-func (t *Tables) Apply(delta *parser.TableChanges) *event.TableInfo {
-    existing := t.Get(delta.Database, delta.Table)
-    
-    for _, change := range delta.ModifiedColumns {
-        if change.Position != nil {
-            if change.Position.First {
-                // 移到第一个位置
-                removeColumn(existing, change.OldName)
-                insertColumnAt(existing, 0, newColumnInfo)
-            } else if change.Position.After != "" {
-                // 移到指定列之后
-                removeColumn(existing, change.OldName)
-                idx := findColumnIndex(existing, change.Position.After)
-                insertColumnAt(existing, idx+1, newColumnInfo)
-            }
-        }
-    }
-    
-    return existing
-}
+```
+Parser.ApplyDDL(oldTable{Columns:[a,b,c]}, "ALTER TABLE t MODIFY b INT FIRST")
+→ DDLResult{
+    TableChanges: {ModifiedColumns: [{Name:"b", Position:{First:true}}]}
+    NewTableInfo: {Columns:[b,a,c]}  ← 列顺序已重排
+  }
 ```
 
 ---
@@ -384,25 +438,26 @@ func (t *Tables) Apply(delta *parser.TableChanges) *event.TableInfo {
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| `pkg/event/schema_history.go` | 新增 | SchemaHistoryRecord + SchemaHistory 接口 |
-| `internal/schema/tables.go` | 新增 | Tables 内存表集合 + Apply() 列位置处理 |
+| `pkg/event/schema_history.go` | 新增 | SchemaHistoryRecord + SchemaHistory 接口 + DDLRecord + DDLStatus |
+| `internal/schema/tables.go` | 新增 | Tables 内存表集合（纯存储容器，无 Apply 逻辑） |
 | `internal/schema/local_history.go` | 新增 | LocalSchemaHistory 存储实现 |
-| `internal/schema/tables_test.go` | 新增 | Apply delta 测试（含列位置变更） |
+| `internal/schema/tables_test.go` | 新增 | Put/Get/Remove 测试 |
 | `internal/schema/local_history_test.go` | 新增 | Record + Recover 测试 |
-| `pkg/parser/mysql/visitor.go` | 修改 | ALTER 增强：CHANGE、AFTER/FIRST、完整类型、Nullable |
-| `pkg/parser/oracle/visitor.go` | 修改 | ALTER 重写为 ANTLR AST |
-| `pkg/parser/postgres/visitor.go` | 修改 | ALTER 增强：类型、SET NOT NULL、SET DEFAULT |
-| `pkg/parser/sqlserver/visitor.go` | 修改 | ALTER 增强：ALTER COLUMN 类型变更 |
-| `pkg/parser/types.go` (或类似) | 修改 | AlterColumnChange + ColumnPosition 类型定义 |
-| `internal/source/mysql/binlog_syncer.go` | 修改 | handleRowsEvent 改从内存 Tables 取 schema |
-| `internal/source/mysql/connector.go` | 修改 | 启动时 Recover schema history |
+| `pkg/parser/parser.go` (或接口文件) | 修改 | 新增 `ApplyDDL(oldTable, ddl) → DDLResult` 接口方法 |
+| `pkg/parser/mysql/visitor.go` | 修改 | ALTER 增强：CHANGE、AFTER/FIRST、完整类型、Nullable + ApplyDDL 实现 |
+| `pkg/parser/oracle/visitor.go` | 修改 | ALTER 重写为 ANTLR AST + ApplyDDL 实现 |
+| `pkg/parser/postgres/visitor.go` | 修改 | ALTER 增强：类型、SET NOT NULL、SET DEFAULT + ApplyDDL 实现 |
+| `pkg/parser/sqlserver/visitor.go` | 修改 | ALTER 增强：ALTER COLUMN 类型变更 + ApplyDDL 实现 |
+| `pkg/parser/types.go` (或类似) | 修改 | AlterColumnChange + ColumnPosition + DDLResult 类型定义 |
+| `internal/source/mysql/binlog_syncer.go` | 修改 | handleRowsEvent 改从内存 Tables 取 schema；handleQueryEvent 改用 ApplyDDL |
+| `internal/source/mysql/connector.go` | 修改 | 启动时 Recover schema history，初始化 Tables |
 | `internal/source/oracle/connector.go` | 修改 | 同上 |
 | `internal/source/postgres/connector.go` | 修改 | 同上 |
 | `internal/source/sqlserver/connector.go` | 修改 | 同上 |
 | `internal/source/mariadb/connector.go` | 修改 | 同上 |
 | `internal/source/*/schema_cache.go` | 废弃 | 不再从 INFORMATION_SCHEMA 查询（逐步迁移后删除） |
 | `internal/cache/local_backend.go` | 修改 | fsync + CRC32 + 事务完整性 |
-| `internal/lifecycle/pipeline_integration.go` | 修改 | Route 错误处理 |
+| `internal/lifecycle/pipeline_integration.go` | 修改 | Route 错误处理；DDL 事件走 DDLRecord 流程 |
 
 ---
 
@@ -411,11 +466,11 @@ func (t *Tables) Apply(delta *parser.TableChanges) *event.TableInfo {
 | 优先级 | 工作项 | 说明 |
 |--------|--------|------|
 | **P0** | 缓冲文件事务完整性 | 全局 WAL（方案 A）或 committed_gtids（方案 B）待决策后实现 |
+| **P0** | Parser `ApplyDDL()` 接口 + MySQL 增强 | 前置依赖：CHANGE/AFTER/FIRST/完整类型/Nullable；MySQL 流量最大先做 |
 | **P0** | Schema History 接口 + 存储 + Recover | 核心机制，所有 connector 依赖 |
-| **P0** | Tables.Apply() 含列位置处理 | ALTER 后列顺序影响 binlog 行数据解析 |
-| **P1** | MySQL parser ALTER 增强 | CHANGE 语法 + AFTER/FIRST + 完整类型 + Nullable |
-| **P1** | Oracle parser ALTER 重写 | 文本匹配 → ANTLR AST |
-| **P1** | PostgreSQL/SQL Server parser ALTER 增强 | 类型提取 + ALTER COLUMN |
+| **P0** | DDL 应用状态跟踪 | DDLRecord + DDLStatus，目标端执行成功后才更新 Tables |
+| **P1** | Oracle parser ALTER 重写 | 文本匹配 → ANTLR AST + ApplyDDL 实现 |
+| **P1** | PostgreSQL/SQL Server parser ALTER 增强 | 类型提取 + ALTER COLUMN + ApplyDDL 实现 |
 | **P2** | 废弃 schema_cache.go | 迁移完成后删除 INFORMATION_SCHEMA 查询路径 |
 | **P2** | fsync 模式配置化 | every / batch / none 可选 |
 | **P2** | CRC32 记录校验 | 检测静默数据损坏 |
@@ -427,9 +482,12 @@ func (t *Tables) Apply(delta *parser.TableChanges) *event.TableInfo {
 | 编号 | 事项 | 选项 | 状态 |
 |------|------|------|------|
 | D1 | 缓冲事务完整性方案 | A. 全局 WAL + 按表索引 / B. 分文件 + committed_gtids | **未决** |
-| D2 | Schema History 存储后端 | 单文件（全量记录顺序追加）/ 按表分文件 / 复用 LocalBackend | **未决** |
+| D2 | Schema History 存储后端 | 单文件（全量记录顺序追加）/ 按表分文件 / 复用 WAL（如果 D1 选 A） | **未决** |
 | D3 | History 序列化格式 | Protobuf / JSON | **未决** |
 | D4 | catching_up UPSERT 安全窗口 | 删除 / 降级为可选（默认关闭）| 取决于 D1 |
+| D5 | DDL 失败后的恢复策略 | 表进 error 等人工介入（retry DDL / skip + 手动同步 schema） | **已决** |
+| D6 | Parser 职责边界 | Parser.ApplyDDL() 负责合成完整 TableInfo，Tables 只做存储 | **已决** |
+| D7 | Schema History 写入时机 | 目标端 DDL 执行成功后才写入 History + 更新内存 Tables | **已决** |
 
 ---
 
