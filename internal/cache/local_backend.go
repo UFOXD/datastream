@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"google.golang.org/protobuf/proto"
+	"github.com/UFOXD/datastream/pkg/event"
 )
 
 // Compile-time check: LocalBackend implements BinlogCacheBackend.
@@ -19,41 +20,47 @@ var _ BinlogCacheBackend = (*LocalBackend)(nil)
 
 var sanitizeRe = regexp.MustCompile(`[^a-zA-Z0-9_]`)
 
+const (
+	// MaxRecordSize is the maximum allowed record size (64MB).
+	MaxRecordSize uint32 = 64 * 1024 * 1024
+	// recordOverhead is the fixed overhead per record: 4B header len + 4B CRC32 + 4B tail len.
+	recordOverhead = 12
+)
+
+// record layout: [4B len][4B CRC32][N bytes payload][4B len]
+// CRC32 covers [4B len][N bytes payload]
+
 // LocalBackend is a filesystem-based BinlogCacheBackend. Each table ID maps to
-// a single append-only file under baseDir using length-prefixed protobuf
-// records.
+// a single append-only file under baseDir.
 type LocalBackend struct {
 	baseDir string
-	files   map[string]*os.File   // tableID -> open append file
-	locks   map[string]*sync.Mutex // tableID -> per-table write lock
-	mu      sync.Mutex             // protects files and locks maps
+	syncMode SyncMode
+	files   map[string]*os.File
+	locks   map[string]*sync.Mutex
+	mu      sync.Mutex
 }
 
-// NewLocalBackend creates a LocalBackend rooted at baseDir. The directory is
-// created if it does not already exist.
-func NewLocalBackend(baseDir string) (*LocalBackend, error) {
+// NewLocalBackend creates a LocalBackend rooted at baseDir.
+func NewLocalBackend(baseDir string, syncMode SyncMode) (*LocalBackend, error) {
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create base dir: %w", err)
 	}
 	return &LocalBackend{
-		baseDir: baseDir,
-		files:   make(map[string]*os.File),
-		locks:   make(map[string]*sync.Mutex),
+		baseDir:  baseDir,
+		syncMode: syncMode,
+		files:    make(map[string]*os.File),
+		locks:    make(map[string]*sync.Mutex),
 	}, nil
 }
 
-// sanitizeTableID replaces every non-alphanumeric, non-underscore character
-// with an underscore.
 func sanitizeTableID(tableID string) string {
 	return sanitizeRe.ReplaceAllString(tableID, "_")
 }
 
-// filePath returns the on-disk path for a table's binlog file.
 func (lb *LocalBackend) filePath(tableID string) string {
 	return filepath.Join(lb.baseDir, sanitizeTableID(tableID)+".binlog")
 }
 
-// tableLock returns (or creates) the per-table mutex.
 func (lb *LocalBackend) tableLock(tableID string) *sync.Mutex {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
@@ -65,8 +72,6 @@ func (lb *LocalBackend) tableLock(tableID string) *sync.Mutex {
 	return m
 }
 
-// getFile returns (or lazily opens) the append-mode file handle for tableID.
-// Caller must hold the per-table lock.
 func (lb *LocalBackend) getFile(tableID string) (*os.File, error) {
 	lb.mu.Lock()
 	f, ok := lb.files[tableID]
@@ -86,14 +91,45 @@ func (lb *LocalBackend) getFile(tableID string) (*os.File, error) {
 	return f, nil
 }
 
-// Write appends a single CacheEvent to the table's binlog file using a
-// 4-byte big-endian length prefix followed by the proto-marshaled payload.
-func (lb *LocalBackend) Write(_ context.Context, tableID string, event *CacheEvent) error {
-	data, err := proto.Marshal(event)
+// marshalAndWrite marshals a CacheEvent and writes it with the new record format.
+// Caller must hold the per-table lock.
+func (lb *LocalBackend) marshalAndWrite(f *os.File, ev *CacheEvent) error {
+	payload, err := ev.Marshal()
 	if err != nil {
 		return fmt.Errorf("marshal event: %w", err)
 	}
 
+	payloadLen := uint32(len(payload))
+	totalLen := payloadLen + uint32(recordOverhead) // 4B header + 4B crc + payload + 4B tail
+
+	// Build record: [4B len][4B CRC][payload][4B len]
+	// CRC32 covers [4B len || payload]
+	var lenBuf [4]byte
+	binary.BigEndian.PutUint32(lenBuf[:], payloadLen)
+	crcInput := append(lenBuf[:], payload...)
+	crc := crc32.ChecksumIEEE(crcInput)
+
+	buf := make([]byte, totalLen)
+	binary.BigEndian.PutUint32(buf[0:4], payloadLen)
+	binary.BigEndian.PutUint32(buf[4:8], crc)
+	copy(buf[8:8+payloadLen], payload)
+	binary.BigEndian.PutUint32(buf[8+payloadLen:], payloadLen) // tail length
+
+	if _, err := f.Write(buf); err != nil {
+		return fmt.Errorf("write record: %w", err)
+	}
+	return nil
+}
+
+func (lb *LocalBackend) maybeSync(f *os.File) error {
+	if lb.syncMode == SyncModeEvery {
+		return f.Sync()
+	}
+	return nil
+}
+
+// Write appends a single CacheEvent to the table's buffer file.
+func (lb *LocalBackend) Write(_ context.Context, tableID string, ev *CacheEvent) error {
 	tl := lb.tableLock(tableID)
 	tl.Lock()
 	defer tl.Unlock()
@@ -103,62 +139,122 @@ func (lb *LocalBackend) Write(_ context.Context, tableID string, event *CacheEve
 		return err
 	}
 
-	// Length prefix (4 bytes, big-endian).
-	var lenBuf [4]byte
-	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(data)))
-	if _, err := f.Write(lenBuf[:]); err != nil {
-		return fmt.Errorf("write length prefix: %w", err)
+	if err := lb.marshalAndWrite(f, ev); err != nil {
+		return err
 	}
-	if _, err := f.Write(data); err != nil {
-		return fmt.Errorf("write payload: %w", err)
+	return lb.maybeSync(f)
+}
+
+// WriteBatch atomically writes a batch of CacheEvents.
+func (lb *LocalBackend) WriteBatch(_ context.Context, tableID string, events []*CacheEvent) error {
+	tl := lb.tableLock(tableID)
+	tl.Lock()
+	defer tl.Unlock()
+
+	f, err := lb.getFile(tableID)
+	if err != nil {
+		return err
+	}
+
+	for _, ev := range events {
+		if err := lb.marshalAndWrite(f, ev); err != nil {
+			return err
+		}
+	}
+
+	// Batch mode: always sync after a batch.
+	if lb.syncMode != SyncModeNone {
+		return f.Sync()
 	}
 	return nil
 }
 
-// Read opens the table's binlog file and sends CacheEvents to the returned
-// channel. If fromGTID is empty the entire file is streamed. Otherwise events
-// are skipped until we find one whose GTID matches fromGTID and whose
-// EventSeq >= fromEventSeq; from that point on every subsequent event is sent.
-func (lb *LocalBackend) Read(ctx context.Context, tableID string, fromGTID string, fromEventSeq int64) (<-chan *CacheEvent, error) {
+// Read streams CacheEvents from the table's buffer file.
+func (lb *LocalBackend) Read(ctx context.Context, tableID string, fromTxID string, fromEventSeq int64) ReadResult {
 	fp := lb.filePath(tableID)
-	f, err := os.Open(fp)
-	if err != nil {
-		return nil, fmt.Errorf("open file for reading table %s: %w", tableID, err)
-	}
-
 	ch := make(chan *CacheEvent, 64)
+	errCh := make(chan error, 1)
+
 	go func() {
 		defer close(ch)
+		defer close(errCh)
+
+		f, err := os.Open(fp)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return // no file = no events
+			}
+			errCh <- fmt.Errorf("open file for reading table %s: %w", tableID, err)
+			return
+		}
 		defer f.Close()
 
-		emitting := fromGTID == ""
+		emitting := fromTxID == ""
 		var lenBuf [4]byte
+		var crcBuf [4]byte
+		var tailBuf [4]byte
 
 		for {
-			// Check cancellation before every record.
 			select {
 			case <-ctx.Done():
 				return
 			default:
 			}
 
-			// Read length prefix.
+			// Read header length.
 			if _, err := io.ReadFull(f, lenBuf[:]); err != nil {
-				return // EOF or read error — done
+				if err != io.EOF && err != io.ErrUnexpectedEOF {
+					errCh <- fmt.Errorf("read length prefix: %w", err)
+				}
+				return
 			}
 			payloadLen := binary.BigEndian.Uint32(lenBuf[:])
-			data := make([]byte, payloadLen)
-			if _, err := io.ReadFull(f, data); err != nil {
+			if payloadLen > MaxRecordSize {
+				errCh <- fmt.Errorf("record too large: %d bytes (max %d)", payloadLen, MaxRecordSize)
 				return
 			}
 
-			ev := &CacheEvent{}
-			if err := proto.Unmarshal(data, ev); err != nil {
-				return // corrupt record — stop
+			// Read CRC32.
+			if _, err := io.ReadFull(f, crcBuf[:]); err != nil {
+				errCh <- fmt.Errorf("read crc: %w", err)
+				return
+			}
+
+			// Read payload.
+			payload := make([]byte, payloadLen)
+			if _, err := io.ReadFull(f, payload); err != nil {
+				errCh <- fmt.Errorf("read payload: %w", err)
+				return
+			}
+
+			// Read tail length.
+			if _, err := io.ReadFull(f, tailBuf[:]); err != nil {
+				errCh <- fmt.Errorf("read tail length: %w", err)
+				return
+			}
+			tailLen := binary.BigEndian.Uint32(tailBuf[:])
+			if tailLen != payloadLen {
+				errCh <- fmt.Errorf("tail length mismatch: header=%d tail=%d", payloadLen, tailLen)
+				return
+			}
+
+			// Verify CRC32.
+			expectedCRC := binary.BigEndian.Uint32(crcBuf[:])
+			actualCRC := crc32.ChecksumIEEE(append(lenBuf[:], payload...))
+			if expectedCRC != actualCRC {
+				errCh <- fmt.Errorf("CRC32 mismatch: expected %08x got %08x", expectedCRC, actualCRC)
+				return
+			}
+
+			// Unmarshal.
+			ev, err := UnmarshalCacheEvent(payload)
+			if err != nil {
+				errCh <- fmt.Errorf("unmarshal event: %w", err)
+				return
 			}
 
 			if !emitting {
-				if ev.Gtid == fromGTID && ev.EventSeq >= fromEventSeq {
+				if ev.TxID == fromTxID && ev.EventSeq >= fromEventSeq {
 					emitting = true
 				}
 			}
@@ -171,11 +267,11 @@ func (lb *LocalBackend) Read(ctx context.Context, tableID string, fromGTID strin
 			}
 		}
 	}()
-	return ch, nil
+
+	return ReadResult{Events: ch, Err: errCh}
 }
 
-// Delete removes the binlog file for the given table and cleans up any cached
-// file handle.
+// Delete removes the binlog file for the given table.
 func (lb *LocalBackend) Delete(_ context.Context, tableID string) error {
 	tl := lb.tableLock(tableID)
 	tl.Lock()
@@ -233,6 +329,123 @@ func (lb *LocalBackend) Exists(_ context.Context, tableID string) (bool, error) 
 		return false, nil
 	}
 	return false, fmt.Errorf("stat file for table %s: %w", tableID, err)
+}
+
+// Sync forces fsync on the table's buffer file.
+func (lb *LocalBackend) Sync(_ context.Context, tableID string) error {
+	lb.mu.Lock()
+	f, ok := lb.files[tableID]
+	lb.mu.Unlock()
+	if !ok {
+		return nil // no file open, nothing to sync
+	}
+	return f.Sync()
+}
+
+// TruncateToLastComplete scans the table's buffer file from the tail,
+// finds the last complete record, and truncates everything after it.
+func (lb *LocalBackend) TruncateToLastComplete(_ context.Context, tableID string) (*event.Position, error) {
+	fp := lb.filePath(tableID)
+	f, err := os.OpenFile(fp, os.O_RDWR, 0o644)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("open file: %w", err)
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat file: %w", err)
+	}
+	fileSize := stat.Size()
+
+	if fileSize == 0 {
+		return nil, nil
+	}
+
+	var tailBuf [4]byte
+	var headerBuf [4]byte
+
+	// Scan backwards from end of file, trying each position as a potential tail.
+	for fileSize >= int64(recordOverhead) {
+		// Read potential tail length.
+		if _, err := f.ReadAt(tailBuf[:], fileSize-4); err != nil {
+			fileSize--
+			continue
+		}
+		payloadLen := binary.BigEndian.Uint32(tailBuf[:])
+		if payloadLen > MaxRecordSize {
+			fileSize--
+			continue
+		}
+
+		recordSize := int64(payloadLen) + int64(recordOverhead)
+		if recordSize > fileSize {
+			fileSize--
+			continue
+		}
+
+		// Read header length.
+		recordStart := fileSize - recordSize
+		if _, err := f.ReadAt(headerBuf[:], recordStart); err != nil {
+			fileSize--
+			continue
+		}
+		headerLen := binary.BigEndian.Uint32(headerBuf[:])
+		if headerLen != payloadLen {
+			// Not a valid record boundary, step back.
+			fileSize--
+			continue
+		}
+
+		// Read the full record for CRC check.
+		recordBuf := make([]byte, recordSize)
+		if _, err := f.ReadAt(recordBuf, recordStart); err != nil {
+			fileSize--
+			continue
+		}
+
+		storedCRC := binary.BigEndian.Uint32(recordBuf[4:8])
+		actualCRC := crc32.ChecksumIEEE(recordBuf[0 : 4+payloadLen])
+		if storedCRC != actualCRC {
+			fileSize--
+			continue
+		}
+
+		// Valid record found.
+		payload := recordBuf[8 : 8+payloadLen]
+		ev, err := UnmarshalCacheEvent(payload)
+		if err != nil {
+			fileSize--
+			continue
+		}
+
+		pos, _ := ev.GetPosition()
+
+		// Truncate to end of this valid record.
+		validEnd := recordStart + recordSize
+		if err := f.Truncate(validEnd); err != nil {
+			return nil, fmt.Errorf("truncate: %w", err)
+		}
+
+		// Invalidate cached file handle.
+		lb.mu.Lock()
+		if oldF, ok := lb.files[tableID]; ok {
+			oldF.Close()
+			delete(lb.files, tableID)
+		}
+		lb.mu.Unlock()
+
+		return pos, nil
+	}
+
+	// No valid records found, truncate to empty.
+	if err := f.Truncate(0); err != nil {
+		return nil, err
+	}
+	return nil, nil
 }
 
 // Close closes all open file handles.

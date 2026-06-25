@@ -17,27 +17,25 @@ type EventSink interface {
 // BinlogConsumer routes incoming binlog ChangeEvents to the appropriate destination
 // based on the per-table lifecycle state.
 type BinlogConsumer struct {
-	taskID string
-	store  source.TableLifecycleStore
-	cache  cache.BinlogCacheBackend
-	sink   EventSink
+	taskID     string
+	store      source.TableLifecycleStore
+	cache      cache.BinlogCacheBackend
+	sink       EventSink
+	sourceType cache.SourceType
 }
 
 // NewBinlogConsumer creates a new BinlogConsumer.
-func NewBinlogConsumer(taskID string, store source.TableLifecycleStore, cacheBackend cache.BinlogCacheBackend, sink EventSink) *BinlogConsumer {
+func NewBinlogConsumer(taskID string, store source.TableLifecycleStore, cacheBackend cache.BinlogCacheBackend, sink EventSink, sourceType cache.SourceType) *BinlogConsumer {
 	return &BinlogConsumer{
-		taskID: taskID,
-		store:  store,
-		cache:  cacheBackend,
-		sink:   sink,
+		taskID:     taskID,
+		store:      store,
+		cache:      cacheBackend,
+		sink:       sink,
+		sourceType: sourceType,
 	}
 }
 
-// Route dispatches a single ChangeEvent based on the table's lifecycle state:
-//   - snapshotting → write to cache (for later replay)
-//   - catching_up, streaming → write to sink (real-time delivery)
-//   - pending, error, paused → discard
-//   - table not found → discard
+// Route dispatches a single ChangeEvent based on the table's lifecycle state.
 func (c *BinlogConsumer) Route(ctx context.Context, ev *event.ChangeEvent) error {
 	tableID := source.TableID{
 		Database: ev.Table.Database,
@@ -47,38 +45,39 @@ func (c *BinlogConsumer) Route(ctx context.Context, ev *event.ChangeEvent) error
 
 	lc, err := c.store.Get(ctx, c.taskID, tableID)
 	if err != nil {
-		// Table not found in store — discard.
-		return nil
+		return nil // table not found — discard
 	}
 
 	state := lc.GetState()
 	switch state {
 	case source.TableStateSnapshotting:
-		ce := eventToCacheEvent(ev)
+		ce := eventToCacheEvent(ev, c.sourceType)
 		return c.cache.Write(ctx, tableID.String(), ce)
 
 	case source.TableStateCatchingUp, source.TableStateStreaming:
 		return c.sink.Write(ctx, []*event.ChangeEvent{ev})
 
 	default:
-		// pending, error, paused — discard
 		return nil
 	}
 }
 
 // eventToCacheEvent converts a ChangeEvent to a CacheEvent for persistent caching.
-func eventToCacheEvent(ev *event.ChangeEvent) *cache.CacheEvent {
-	gtid := ev.Position.GTID
-	if gtid == "" {
-		gtid = ev.Position.TxID
-	}
-
+func eventToCacheEvent(ev *event.ChangeEvent, sourceType cache.SourceType) *cache.CacheEvent {
 	payload, _ := json.Marshal(ev)
 
-	return &cache.CacheEvent{
-		Gtid:        gtid,
+	ce := &cache.CacheEvent{
+		SourceType:  sourceType,
 		EventSeq:    int64(ev.Position.SeqNo),
 		TimestampMs: ev.Timestamp.UnixMilli(),
 		Payload:     payload,
 	}
+
+	// Store position.
+	ce.SetPosition(&ev.Position)
+
+	// Set tx_id based on source type.
+	ce.TxID = ev.Position.TxID
+
+	return ce
 }

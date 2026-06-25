@@ -61,8 +61,8 @@ func TestTransitionPendingToSnapshotting(t *testing.T) {
 	if lc.SnapshotPosition == nil {
 		t.Fatal("SnapshotPosition should be set when entering snapshotting")
 	}
-	if lc.SnapshotPosition.GTID != pos.GTID {
-		t.Errorf("SnapshotPosition.GTID = %q, want %q", lc.SnapshotPosition.GTID, pos.GTID)
+	if lc.SnapshotPosition.TxID != pos.TxID {
+		t.Errorf("SnapshotPosition.TxID = %q, want %q", lc.SnapshotPosition.TxID, pos.TxID)
 	}
 }
 
@@ -160,7 +160,7 @@ func TestTransitionErrorToPending(t *testing.T) {
 	if lc.RetryCount != 1 {
 		t.Errorf("RetryCount = %d, want 1", lc.RetryCount)
 	}
-	if lc.SnapshotPosition == nil || lc.SnapshotPosition.GTID != "g-new" {
+	if lc.SnapshotPosition == nil || lc.SnapshotPosition.TxID != "g-new" {
 		t.Errorf("SnapshotPosition not updated to new position")
 	}
 	if lc.LastError != "" {

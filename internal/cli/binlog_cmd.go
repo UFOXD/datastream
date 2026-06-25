@@ -4,12 +4,12 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"os"
 	"time"
 
 	"github.com/spf13/cobra"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/UFOXD/datastream/internal/cache"
 )
@@ -25,6 +25,43 @@ func (c *CLI) buildBinlogCommand() *cobra.Command {
 	cmd.AddCommand(c.buildBinlogStatCommand())
 
 	return cmd
+}
+
+// readRecord reads one record from the file: [4B len][4B CRC][payload][4B tail_len].
+// Returns the payload bytes or an error.
+func readRecord(f *os.File) ([]byte, error) {
+	var lenBuf [4]byte
+	if _, err := io.ReadFull(f, lenBuf[:]); err != nil {
+		return nil, err
+	}
+	payloadLen := binary.BigEndian.Uint32(lenBuf[:])
+
+	var crcBuf [4]byte
+	if _, err := io.ReadFull(f, crcBuf[:]); err != nil {
+		return nil, fmt.Errorf("read crc: %w", err)
+	}
+
+	payload := make([]byte, payloadLen)
+	if _, err := io.ReadFull(f, payload); err != nil {
+		return nil, fmt.Errorf("read payload: %w", err)
+	}
+
+	var tailBuf [4]byte
+	if _, err := io.ReadFull(f, tailBuf[:]); err != nil {
+		return nil, fmt.Errorf("read tail: %w", err)
+	}
+	tailLen := binary.BigEndian.Uint32(tailBuf[:])
+	if tailLen != payloadLen {
+		return nil, fmt.Errorf("tail length mismatch: header=%d tail=%d", payloadLen, tailLen)
+	}
+
+	storedCRC := binary.BigEndian.Uint32(crcBuf[:])
+	actualCRC := crc32.ChecksumIEEE(append(lenBuf[:], payload...))
+	if storedCRC != actualCRC {
+		return nil, fmt.Errorf("CRC32 mismatch: expected %08x got %08x", storedCRC, actualCRC)
+	}
+
+	return payload, nil
 }
 
 // buildBinlogDecodeCommand builds the binlog decode command.
@@ -57,35 +94,27 @@ func (c *CLI) buildBinlogDecodeCommand() *cobra.Command {
 			enc := json.NewEncoder(c.output)
 
 			for {
-				// Read 4-byte length prefix (big-endian uint32)
-				var length uint32
-				if err := binary.Read(f, binary.BigEndian, &length); err != nil {
+				payload, err := readRecord(f)
+				if err != nil {
 					if err == io.EOF {
 						break
 					}
-					return fmt.Errorf("failed to read length prefix: %w", err)
+					return err
 				}
 
-				// Read the payload
-				payload := make([]byte, length)
-				if _, err := io.ReadFull(f, payload); err != nil {
-					return fmt.Errorf("failed to read payload (%d bytes): %w", length, err)
+				ev, err := cache.UnmarshalCacheEvent(payload)
+				if err != nil {
+					return fmt.Errorf("unmarshal: %w", err)
 				}
 
-				// Unmarshal protobuf
-				event := &cache.CacheEvent{}
-				if err := proto.Unmarshal(payload, event); err != nil {
-					return fmt.Errorf("failed to unmarshal CacheEvent: %w", err)
-				}
-
-				// Output as JSON line
 				jsonObj := map[string]interface{}{
-					"gtid":         event.GetGtid(),
-					"event_seq":    event.GetEventSeq(),
-					"is_begin":     event.GetIsBegin(),
-					"is_commit":    event.GetIsCommit(),
-					"payload_size": len(event.GetPayload()),
-					"timestamp_ms": event.GetTimestampMs(),
+					"source_type":  ev.SourceType,
+					"tx_id":        ev.TxID,
+					"event_seq":    ev.EventSeq,
+					"is_begin":     ev.IsBegin,
+					"is_commit":    ev.IsCommit,
+					"payload_size": len(ev.Payload),
+					"timestamp_ms": ev.TimestampMs,
 				}
 
 				if err := enc.Encode(jsonObj); err != nil {
@@ -111,7 +140,7 @@ func (c *CLI) buildBinlogStatCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "stat",
 		Short: "Show statistics for a binlog cache file",
-		Long:  "Opens a binlog cache file and reports total events, unique GTIDs, total bytes, and time range",
+		Long:  "Opens a binlog cache file and reports total events, unique tx_ids, total bytes, and time range",
 		Example: `  # Show stats for a binlog cache file
   datastream-ctl binlog stat --file /path/to/file.binlog`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -125,7 +154,6 @@ func (c *CLI) buildBinlogStatCommand() *cobra.Command {
 			}
 			defer f.Close()
 
-			// Get file size
 			info, err := f.Stat()
 			if err != nil {
 				return fmt.Errorf("failed to stat file: %w", err)
@@ -134,41 +162,33 @@ func (c *CLI) buildBinlogStatCommand() *cobra.Command {
 
 			var (
 				totalEvents int
-				gtids       = make(map[string]struct{})
+				txIDs       = make(map[string]struct{})
 				minTs       int64
 				maxTs       int64
 				firstEvent  = true
 			)
 
 			for {
-				// Read 4-byte length prefix (big-endian uint32)
-				var length uint32
-				if err := binary.Read(f, binary.BigEndian, &length); err != nil {
+				payload, err := readRecord(f)
+				if err != nil {
 					if err == io.EOF {
 						break
 					}
-					return fmt.Errorf("failed to read length prefix: %w", err)
+					return err
 				}
 
-				// Read the payload
-				payload := make([]byte, length)
-				if _, err := io.ReadFull(f, payload); err != nil {
-					return fmt.Errorf("failed to read payload (%d bytes): %w", length, err)
-				}
-
-				// Unmarshal protobuf
-				event := &cache.CacheEvent{}
-				if err := proto.Unmarshal(payload, event); err != nil {
-					return fmt.Errorf("failed to unmarshal CacheEvent: %w", err)
+				ev, err := cache.UnmarshalCacheEvent(payload)
+				if err != nil {
+					return fmt.Errorf("unmarshal: %w", err)
 				}
 
 				totalEvents++
 
-				if gtid := event.GetGtid(); gtid != "" {
-					gtids[gtid] = struct{}{}
+				if ev.TxID != "" {
+					txIDs[ev.TxID] = struct{}{}
 				}
 
-				ts := event.GetTimestampMs()
+				ts := ev.TimestampMs
 				if firstEvent {
 					minTs = ts
 					maxTs = ts
@@ -183,11 +203,10 @@ func (c *CLI) buildBinlogStatCommand() *cobra.Command {
 				}
 			}
 
-			// Print summary
 			fmt.Fprintf(c.output, "File:         %s\n", filePath)
 			fmt.Fprintf(c.output, "Total bytes:  %d\n", totalBytes)
 			fmt.Fprintf(c.output, "Total events: %d\n", totalEvents)
-			fmt.Fprintf(c.output, "Unique GTIDs: %d\n", len(gtids))
+			fmt.Fprintf(c.output, "Unique TxIDs: %d\n", len(txIDs))
 
 			if totalEvents > 0 {
 				earliest := time.UnixMilli(minTs)
