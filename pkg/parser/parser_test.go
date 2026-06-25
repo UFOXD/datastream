@@ -3,6 +3,8 @@ package parser
 import (
 	"context"
 	"testing"
+
+	"github.com/UFOXD/datastream/pkg/event"
 )
 
 func TestDDLTypeConstants(t *testing.T) {
@@ -184,6 +186,10 @@ func (m *mockParser) Parse(ctx context.Context, ddl string) ([]*DDLResult, error
 
 func (m *mockParser) SupportedTypes() []DDLType {
 	return m.supportedTypes
+}
+
+func (m *mockParser) ApplyDDL(_ context.Context, _ *event.TableInfo, _ string) (*DDLResult, error) {
+	return nil, nil
 }
 
 func TestDDLParserInterface(t *testing.T) {

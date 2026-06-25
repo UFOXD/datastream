@@ -6,6 +6,7 @@ package noop
 import (
 	"context"
 
+	"github.com/UFOXD/datastream/pkg/event"
 	"github.com/UFOXD/datastream/pkg/parser"
 )
 
@@ -30,6 +31,11 @@ func (p *Parser) Parse(ctx context.Context, ddl string) ([]*parser.DDLResult, er
 // SupportedTypes returns an empty list as this parser doesn't parse any DDL types.
 func (p *Parser) SupportedTypes() []parser.DDLType {
 	return []parser.DDLType{}
+}
+
+// ApplyDDL is a no-op implementation that returns nil, nil.
+func (p *Parser) ApplyDDL(_ context.Context, _ *event.TableInfo, _ string) (*parser.DDLResult, error) {
+	return nil, nil
 }
 
 // Ensure Parser implements DDLParser interface
