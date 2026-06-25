@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/peter/Codes/claude-plugin-starter/src/agents/**)"
+    ]
+  }
+}

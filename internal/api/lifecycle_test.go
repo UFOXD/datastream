@@ -22,10 +22,13 @@ type mockCacheBackend struct{}
 func (m *mockCacheBackend) Write(_ context.Context, _ string, _ *cache.CacheEvent) error {
 	return nil
 }
-func (m *mockCacheBackend) Read(_ context.Context, _ string, _ string, _ int64) (<-chan *cache.CacheEvent, error) {
+func (m *mockCacheBackend) WriteBatch(_ context.Context, _ string, _ []*cache.CacheEvent) error {
+	return nil
+}
+func (m *mockCacheBackend) Read(_ context.Context, _ string, _ string, _ int64) cache.ReadResult {
 	ch := make(chan *cache.CacheEvent)
 	close(ch)
-	return ch, nil
+	return cache.ReadResult{Events: ch, Err: make(chan error)}
 }
 func (m *mockCacheBackend) Delete(_ context.Context, _ string) error { return nil }
 func (m *mockCacheBackend) Size(_ context.Context, _ string) (int64, error) {
@@ -34,6 +37,10 @@ func (m *mockCacheBackend) Size(_ context.Context, _ string) (int64, error) {
 func (m *mockCacheBackend) TotalSize(_ context.Context) (int64, error) { return 0, nil }
 func (m *mockCacheBackend) Exists(_ context.Context, _ string) (bool, error) {
 	return false, nil
+}
+func (m *mockCacheBackend) Sync(_ context.Context, _ string) error { return nil }
+func (m *mockCacheBackend) TruncateToLastComplete(_ context.Context, _ string) (*event.Position, error) {
+	return nil, nil
 }
 func (m *mockCacheBackend) Close() error { return nil }
 

@@ -48,7 +48,7 @@ func TestTransitionPendingToSnapshotting(t *testing.T) {
 	pos := &event.Position{
 		BinlogFile: "mysql-bin.000001",
 		BinlogPos:  154,
-		GTID:       "3E11FA47-71CA-11E1-9E33-C80AA9429562:1-5",
+		TxID:       "3E11FA47-71CA-11E1-9E33-C80AA9429562:1-5",
 		CommitTime: time.Now(),
 	}
 
@@ -70,12 +70,12 @@ func TestTransitionSnapshotToCatchingUp(t *testing.T) {
 	tid := TableID{Database: "mydb", Table: "orders"}
 	lc := NewTableLifecycle(tid)
 
-	snapPos := &event.Position{GTID: "gtid-1", CommitTime: time.Now()}
+	snapPos := &event.Position{TxID: "gtid-1", CommitTime: time.Now()}
 	if err := lc.TransitionTo(TableStateSnapshotting, snapPos); err != nil {
 		t.Fatalf("pending→snapshotting failed: %v", err)
 	}
 
-	catchPos := &event.Position{GTID: "gtid-2", CommitTime: time.Now()}
+	catchPos := &event.Position{TxID: "gtid-2", CommitTime: time.Now()}
 	if err := lc.TransitionTo(TableStateCatchingUp, catchPos); err != nil {
 		t.Fatalf("snapshotting→catching_up failed: %v", err)
 	}
@@ -89,13 +89,13 @@ func TestTransitionCatchingUpToStreaming(t *testing.T) {
 	lc := NewTableLifecycle(tid)
 
 	// pending → snapshotting → catching_up → streaming
-	if err := lc.TransitionTo(TableStateSnapshotting, &event.Position{GTID: "g1"}); err != nil {
+	if err := lc.TransitionTo(TableStateSnapshotting, &event.Position{TxID: "g1"}); err != nil {
 		t.Fatalf("pending→snapshotting failed: %v", err)
 	}
-	if err := lc.TransitionTo(TableStateCatchingUp, &event.Position{GTID: "g2"}); err != nil {
+	if err := lc.TransitionTo(TableStateCatchingUp, &event.Position{TxID: "g2"}); err != nil {
 		t.Fatalf("snapshotting→catching_up failed: %v", err)
 	}
-	if err := lc.TransitionTo(TableStateStreaming, &event.Position{GTID: "g3"}); err != nil {
+	if err := lc.TransitionTo(TableStateStreaming, &event.Position{TxID: "g3"}); err != nil {
 		t.Fatalf("catching_up→streaming failed: %v", err)
 	}
 	if lc.GetState() != TableStateStreaming {
@@ -122,7 +122,7 @@ func TestTransitionToError(t *testing.T) {
 	lc := NewTableLifecycle(tid)
 
 	// Move to snapshotting first.
-	if err := lc.TransitionTo(TableStateSnapshotting, &event.Position{GTID: "g1"}); err != nil {
+	if err := lc.TransitionTo(TableStateSnapshotting, &event.Position{TxID: "g1"}); err != nil {
 		t.Fatalf("pending→snapshotting failed: %v", err)
 	}
 
@@ -144,12 +144,12 @@ func TestTransitionErrorToPending(t *testing.T) {
 	lc := NewTableLifecycle(tid)
 
 	// pending → snapshotting → error → pending (via ResetToPending)
-	if err := lc.TransitionTo(TableStateSnapshotting, &event.Position{GTID: "g1"}); err != nil {
+	if err := lc.TransitionTo(TableStateSnapshotting, &event.Position{TxID: "g1"}); err != nil {
 		t.Fatalf("pending→snapshotting failed: %v", err)
 	}
 	lc.SetError("connection lost")
 
-	newPos := &event.Position{GTID: "g-new", CommitTime: time.Now()}
+	newPos := &event.Position{TxID: "g-new", CommitTime: time.Now()}
 	if err := lc.ResetToPending(newPos); err != nil {
 		t.Fatalf("ResetToPending failed: %v", err)
 	}
@@ -182,24 +182,24 @@ func TestPauseOnlyAllowedInCatchingUpAndStreaming(t *testing.T) {
 		{
 			name: "snapshotting",
 			setup: func(lc *TableLifecycle) {
-				_ = lc.TransitionTo(TableStateSnapshotting, &event.Position{GTID: "g1"})
+				_ = lc.TransitionTo(TableStateSnapshotting, &event.Position{TxID: "g1"})
 			},
 			wantErr: true,
 		},
 		{
 			name: "catching_up",
 			setup: func(lc *TableLifecycle) {
-				_ = lc.TransitionTo(TableStateSnapshotting, &event.Position{GTID: "g1"})
-				_ = lc.TransitionTo(TableStateCatchingUp, &event.Position{GTID: "g2"})
+				_ = lc.TransitionTo(TableStateSnapshotting, &event.Position{TxID: "g1"})
+				_ = lc.TransitionTo(TableStateCatchingUp, &event.Position{TxID: "g2"})
 			},
 			wantErr: false,
 		},
 		{
 			name: "streaming",
 			setup: func(lc *TableLifecycle) {
-				_ = lc.TransitionTo(TableStateSnapshotting, &event.Position{GTID: "g1"})
-				_ = lc.TransitionTo(TableStateCatchingUp, &event.Position{GTID: "g2"})
-				_ = lc.TransitionTo(TableStateStreaming, &event.Position{GTID: "g3"})
+				_ = lc.TransitionTo(TableStateSnapshotting, &event.Position{TxID: "g1"})
+				_ = lc.TransitionTo(TableStateCatchingUp, &event.Position{TxID: "g2"})
+				_ = lc.TransitionTo(TableStateStreaming, &event.Position{TxID: "g3"})
 			},
 			wantErr: false,
 		},
@@ -226,9 +226,9 @@ func TestResumeRestoresPreviousState(t *testing.T) {
 	lc := NewTableLifecycle(tid)
 
 	// Drive to streaming, then pause, then resume.
-	_ = lc.TransitionTo(TableStateSnapshotting, &event.Position{GTID: "g1"})
-	_ = lc.TransitionTo(TableStateCatchingUp, &event.Position{GTID: "g2"})
-	_ = lc.TransitionTo(TableStateStreaming, &event.Position{GTID: "g3"})
+	_ = lc.TransitionTo(TableStateSnapshotting, &event.Position{TxID: "g1"})
+	_ = lc.TransitionTo(TableStateCatchingUp, &event.Position{TxID: "g2"})
+	_ = lc.TransitionTo(TableStateStreaming, &event.Position{TxID: "g3"})
 
 	if err := lc.Pause(); err != nil {
 		t.Fatalf("Pause() failed: %v", err)
@@ -246,8 +246,8 @@ func TestResumeRestoresPreviousState(t *testing.T) {
 
 	// Also test Resume from paused catching_up.
 	lc2 := NewTableLifecycle(tid)
-	_ = lc2.TransitionTo(TableStateSnapshotting, &event.Position{GTID: "g1"})
-	_ = lc2.TransitionTo(TableStateCatchingUp, &event.Position{GTID: "g2"})
+	_ = lc2.TransitionTo(TableStateSnapshotting, &event.Position{TxID: "g1"})
+	_ = lc2.TransitionTo(TableStateCatchingUp, &event.Position{TxID: "g2"})
 	_ = lc2.Pause()
 	_ = lc2.Resume()
 	if lc2.GetState() != TableStateCatchingUp {

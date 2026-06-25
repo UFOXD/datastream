@@ -1,191 +1,148 @@
-# DataStream 设计文档
+# DataStream 设计文档总览
+
+> 最后更新：2026-06-02
 
 ## 项目概述
 
-**DataStream** 是一个基于 Go 语言实现的变更数据捕获（CDC）平台，从 Debezium 架构借鉴并重构，支持独立运行，无需强制依赖 Kafka。
-
-### 核心目标
-
-- **多数据源支持**：MySQL、PostgreSQL、MongoDB、Oracle、SQL Server、MariaDB
-- **多目标支持**：Debezium 现有 Sink + Kafka（可选）
-- **集群模式**：单节点/多节点，任务调度，故障转移
-- **可插拔架构**：协调后端、Connector、转换器均可扩展
+**DataStream** 是 Go 语言实现的 CDC（Change Data Capture）平台，从 Debezium 架构借鉴并重构，支持独立运行，无需强制依赖 Kafka。
 
 ---
 
-## 一、整体架构
+## 文档索引
+
+### 1. 项目总览
+
+| 文档 | 说明 |
+|------|------|
+| [需求文档](./requirements.md) | 项目目标、功能范围、非功能需求 |
+| [分阶段实现计划](./implementation-plan.md) | Phase 1-11 实现路线图与进度 |
+
+### 2. 架构基础
+
+| 文档 | 说明 |
+|------|------|
+| [事件模型设计](./event-model-design.md) | ChangeEvent / Position / RowData / TableInfo 核心数据结构 |
+| [Core Layer 设计](./core-design.md) | 配置管理、日志、指标、错误码、工具函数 |
+| [Go 实现标准](./go-standards-design.md) | 命名、注释、错误处理、并发安全编码规范 |
+| [错误处理与容错设计](./error-handling-design.md) | DataStreamError 分类、CircuitBreaker、Alerter |
+
+### 3. 解析层
+
+| 文档 | 说明 |
+|------|------|
+| [SQL Parser 设计](./parser-design.md) | DDLParser 接口、ANTLR 语法、Registry、各数据库 Parser |
+| [Oracle DML Parser 重构设计](./oracle-dml-parser-design.md) | Oracle LogMiner SQL_REDO 正则→状态机重写、时区策略 |
+
+### 4. 管道层
+
+| 文文档 | 说明 |
+|------|------|
+| [Pipeline Layer 设计](./pipeline-design.md) | Filter / Transform / Router 接口与实现、Buffer、Backpressure、RateLimiter |
+
+### 5. 连接器层
+
+| 文档 | 说明 |
+|------|------|
+| [Connector Layer 设计](./connector-design.md) | Source/Sink 接口定义、DatabaseDiscovery、TableManager、SnapshotCoordinator |
+| [企业数据库连接器设计](./phase9-enterprise-connectors-design.md) | SQL Server CDC、Oracle LogMiner、Elasticsearch、Redis Sink 设计 |
+| [企业连接器使用指南](./enterprise-connectors-guide.md) | 各连接器配置示例与使用说明 |
+
+### 6. 协调与调度
+
+| 文档 | 说明 |
+|------|------|
+| [Coordinator Layer 设计](./coordinator-design.md) | 节点管理、任务调度、故障转移、etcd 协调后端 |
+
+### 7. API 与 CLI
+
+| 文档 | 说明 |
+|------|------|
+| [API/CLI Layer 设计](./api-cli-design.md) | REST API 端点、CLI 命令（datastream-ctl）、表管理接口 |
+
+### 8. 高级特性
+
+| 文档 | 说明 |
+|------|------|
+| [表级独立生命周期设计](./table-lifecycle-design.md) | 全量/增量解耦、SnapshotScheduler、CatchingUpReplayer、BinlogConsumer、CacheEvent 缓冲 |
+| [Schema History + 缓冲文件完整性设计](./schema-history-and-cache-integrity-design.md) | **B1 缓冲事务完整性**（按源分治）、**B2 Schema History**（自维护表结构链）、**B3 Parser ApplyDDL**、**B4 DDL 状态跟踪** |
+
+### 9. 质量保障
+
+| 文档 | 说明 |
+|------|------|
+| [测试策略设计](./test-strategy-design.md) | 单元测试、集成测试、覆盖率目标、Docker 测试环境 |
+
+---
+
+## 当前阻塞项
+
+详见 [Schema History + 缓冲文件完整性设计](./schema-history-and-cache-integrity-design.md) §7 待决策事项。
+
+| 编号 | 问题 | 状态 |
+|------|------|------|
+| **B1** | 缓冲文件事务完整性 | **已决策**：按源分治 + 事务标记 truncate |
+| **B2** | Schema History | 待实现 |
+| **B3** | Parser ApplyDDL() | MySQL CHANGE/AFTER/FIRST 未实现 |
+| **B4** | DDL 应用状态跟踪 | 已设计，待实现 |
+
+---
+
+## 架构总览
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
 │                      API / CLI Layer                            │
-│         REST API  │  CLI Tool  │  Web Dashboard (future)        │
+│         REST API  │  CLI Tool  │  datastream-ctl               │
 ├────────────────────────────────────────────────────────────────┤
 │                     Coordinator Layer                           │
-│   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐         │
-│   │   Cluster    │  │    Task      │  │   Failover   │         │
-│   │   Manager    │  │  Scheduler   │  │   Handler    │         │
-│   └──────────────┘  └──────────────┘  └──────────────┘         │
-│                    Coordination Backend                          │
-│                      (etcd / Consul / ...)                       │
+│   Cluster Manager  │  Task Scheduler  │  Failover Handler      │
+│                    Coordination Backend (etcd)                   │
 ├────────────────────────────────────────────────────────────────┤
 │                      Pipeline Layer                             │
-│   ┌────────────────────────────────────────────────────────┐    │
-│   │  Pipeline: Source → Filter → Transform → Sink          │    │
-│   │           └───── in-memory channel ─────┘              │    │
-│   └────────────────────────────────────────────────────────┘    │
+│   Source → Filter → Transform → Router → Sink                  │
+│           └────── in-memory channel + Buffer ──────┘            │
 ├────────────────────────────────────────────────────────────────┤
 │                    Connector Layer                              │
-│   ┌─────────────────────┐  ┌─────────────────────┐             │
-│   │   Source Connector  │  │    Sink Connector   │             │
-│   │ ┌─────┐ ┌─────┐ ... │  │ ┌─────┐ ┌─────┐ ... │             │
-│   │ │MySQL│ │  PG │     │  │ │MySQL│ │  PG │     │             │
-│   └─────────────────────┘  └─────────────────────┘             │
+│   Source: MySQL | PostgreSQL | MongoDB | Oracle | SQLServer     │
+│   Sink:   MySQL | PostgreSQL | MongoDB | ES | Redis | Kafka    │
+├────────────────────────────────────────────────────────────────┤
+│                    解析 & 生命周期                               │
+│   Parser (ANTLR)  │  Schema History  │  Table Lifecycle        │
 ├────────────────────────────────────────────────────────────────┤
 │                       Core Layer                                │
 │   Config  │  Logger  │  Metrics  │  Errors  │  Utils           │
 └────────────────────────────────────────────────────────────────┘
 ```
 
-### 核心设计原则
-
-- 每层独立，通过接口解耦
-- 层内部使用 goroutine/channel 实现高并发
-- 所有可变组件（Connector、Coordinator、Transform）可插拔
-
 ---
 
-## 二、统一事件模型（Event Model）
+## 设计进度
 
-详细设计参见 [事件模型设计](./event-model-design.md)。
-
----
-
-## 三、需求决策记录
-
-| 决策项 | 选择 | 说明 |
-|--------|------|------|
-| 数据源 | 全量支持 | MySQL、PostgreSQL、MongoDB、Oracle、SQL Server、MariaDB |
-| 下游目标 | Debezium Sink + Kafka | 支持所有 Debezium Sink，Kafka 可选 |
-| 运行模式 | 集群模式 | 单节点/多节点，任务调度，故障转移 |
-| 协调机制 | 可插拔 | 优先支持 etcd/Consul |
-| 数据传输 | 内存队列 | 同步进度持久化，重启可恢复 |
-| 进度存储 | 目标数据库 | 每个 Sink 在目标库存进度表 |
-| Schema 变更 | 兼容性检查 | 变更时检查，不兼容则暂停告警 |
-| 数据转换 | 基础过滤 + 可插拔 | 内置过滤，支持自定义转换器，后续扩展脚本 |
-| 推进方式 | 全量规划，分阶段实现 | 先完整设计，按优先级分期开发 |
-
----
-
-## 四、Go 实现标准（参考 tiflow）
-
-详细规范参见 [Go 实现标准](./go-standards-design.md)。
-
----
-
-## 五、SQL Parser 设计
-
-详细设计参见 [SQL Parser 设计](./parser-design.md)。
-
----
-
-## 六、模块设计
-
-### 5.1 Core Layer 设计
-
-> [Core Layer 详细设计](./core-design.md)
-
-Core Layer 是基础层，为其他所有层提供通用能力：
-- 配置管理
-- 日志工具
-- 指标收集
-- 错误定义
-- 工具函数
-
-### 5.2 Connector Layer 设计
-
-> [Connector Layer 详细设计](./connector-design.md)
-
-Connector Layer 负责：
-- Source/Sink Connector 接口定义
-- 同步范围配置（Database/Table 级别）
-- Database 级别自动发现机制
-- Table 级别动态表管理
-- SnapshotCoordinator 多线程快照
-- SinkCoordinator 多线程并发写入
-
-### 5.3 Pipeline Layer 设计
-
-> [Pipeline Layer 详细设计](./pipeline-design.md)
-
-Pipeline Layer 负责：
-- Filter 过滤器接口与实现
-- Transform 转换器接口与实现
-- Router 路由器接口与实现
-- Pipeline 生命周期管理
-
-### 5.4 Coordinator Layer 设计
-
-> [Coordinator Layer 详细设计](./coordinator-design.md)
-
-Coordinator Layer 负责：
-- 节点管理（注册、心跳、状态维护）
-- 任务调度（分配、负载均衡、迁移）
-- 故障转移（检测、任务重新分配、进度恢复）
-- 协调后端（etcd/Consul/内存模式）
-
-### 5.5 API/CLI Layer 设计
-
-> [API/CLI Layer 详细设计](./api-cli-design.md)
-
-API/CLI Layer 负责：
-- REST API 服务（任务管理、节点管理、监控）
-- CLI 命令行工具（datastream-ctl）
-- gRPC 接口（内部通信可选）
-
----
-
-## 八、错误处理与容错设计
-
-详细设计参见 [错误处理与容错设计](./error-handling-design.md)。
-
----
-
-## 十、测试策略设计
-
-详细设计参见 [测试策略设计](./test-strategy-design.md)。
-
----
-
-## 十一、设计进度
-
-- [x] 事件模型设计
-- [x] Go 实现标准
-- [x] SQL Parser 设计
-- [x] Core Layer 设计
-- [x] Connector Layer 设计
-- [x] Pipeline Layer 设计
-- [x] Coordinator Layer 设计
-- [x] API/CLI Layer 设计
-- [x] 错误处理与容错
-- [x] 测试策略
-- [x] 分阶段实现计划
-
----
-
-## 十二、实现路线图
-
-详细计划参见 [分阶段实现计划](./implementation-plan.md)。
-
-| 阶段 | 内容 | 周期 |
+| 模块 | 状态 | 文档 |
 |------|------|------|
-| Phase 1 | 基础框架 | 4 周 |
-| Phase 2 | MySQL 单节点同步 | 8 周 |
-| Phase 3 | 多数据源支持 | 12 周 |
-| Phase 4 | 集群模式 | 8 周 |
+| 事件模型 | ✅ 完成 | [event-model-design.md](./event-model-design.md) |
+| Go 标准 | ✅ 完成 | [go-standards-design.md](./go-standards-design.md) |
+| SQL Parser | ✅ 完成 | [parser-design.md](./parser-design.md) |
+| Core Layer | ✅ 完成 | [core-design.md](./core-design.md) |
+| Connector Layer | ✅ 完成 | [connector-design.md](./connector-design.md) |
+| Pipeline Layer | ✅ 完成 | [pipeline-design.md](./pipeline-design.md) |
+| Coordinator Layer | ✅ 完成 | [coordinator-design.md](./coordinator-design.md) |
+| API/CLI Layer | ✅ 完成 | [api-cli-design.md](./api-cli-design.md) |
+| 错误处理 | ✅ 完成 | [error-handling-design.md](./error-handling-design.md) |
+| 测试策略 | ✅ 完成 | [test-strategy-design.md](./test-strategy-design.md) |
+| 企业连接器 | ✅ 完成 | [phase9-enterprise-connectors-design.md](./phase9-enterprise-connectors-design.md) |
+| Oracle DML Parser | ✅ 完成 | [oracle-dml-parser-design.md](./oracle-dml-parser-design.md) |
+| 表级生命周期 | ✅ 完成 | [table-lifecycle-design.md](./table-lifecycle-design.md) |
+| Schema History + 缓冲完整性 | 🔄 设计中 | [schema-history-and-cache-integrity-design.md](./schema-history-and-cache-integrity-design.md) |
 
 ---
 
-*文档版本：v1.0*
-*创建时间：2026-05-07*
-*更新时间：2026-05-07*
-*状态：设计中*
+## 阅读建议
+
+**新成员入门**：需求文档 → 事件模型 → Core Layer → Connector Layer → Pipeline Layer
+
+**了解 CDC 核心流程**：事件模型 → Connector Layer → Pipeline Layer → 表级生命周期
+
+**排查缓冲/恢复问题**：表级生命周期 → Schema History + 缓冲文件完整性设计
+
+**开发新连接器**：Connector Layer 设计 → 企业连接器设计 → Go 实现标准

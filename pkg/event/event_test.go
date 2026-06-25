@@ -598,11 +598,13 @@ func TestPosition_Clone(t *testing.T) {
 }
 
 func TestPosition_Compare_SameTimeHigherSeqNo(t *testing.T) {
-	now := time.Now()
-	p1 := &Position{CommitTime: now, SeqNo: 5}
-	p2 := &Position{CommitTime: now, SeqNo: 3}
+	// Old test: CommitTime+SeqNo comparison is no longer supported.
+	// New Compare() uses source-specific fields (LSN, SCN, etc.).
+	// This test verifies LSN comparison for Postgres.
+	p1 := &Position{LSN: 500}
+	p2 := &Position{LSN: 300}
 
-	result, err := p1.Compare(p2)
+	result, err := p1.Compare(p2, SourceTypePostgres)
 	if err != nil {
 		t.Fatalf("Compare failed: %v", err)
 	}
@@ -1264,20 +1266,20 @@ func TestHeartbeatEvent_ToChangeEvent_Fields(t *testing.T) {
 	}
 }
 
-func TestPositionGTIDField(t *testing.T) {
+func TestPositionTxIDField(t *testing.T) {
 	pos := &Position{
-		GTID:       "3E11FA47-71CA-11E1-9E33-C80AA9429562:1-5",
+		TxID:       "3E11FA47-71CA-11E1-9E33-C80AA9429562:1-5",
 		CommitTime: time.Now(),
 	}
-	if pos.GTID == "" {
-		t.Error("GTID should be set")
+	if pos.TxID == "" {
+		t.Error("TxID should be set")
 	}
 	if pos.IsZero() {
-		t.Error("Position with GTID should not be zero")
+		t.Error("Position with TxID should not be zero")
 	}
 	cloned := pos.Clone()
-	if cloned.GTID != pos.GTID {
-		t.Errorf("Clone GTID = %q, want %q", cloned.GTID, pos.GTID)
+	if cloned.TxID != pos.TxID {
+		t.Errorf("Clone TxID = %q, want %q", cloned.TxID, pos.TxID)
 	}
 }
 
