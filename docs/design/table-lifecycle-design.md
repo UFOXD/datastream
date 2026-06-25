@@ -364,7 +364,9 @@ catching_up 开始:
       使用正常 INSERT/UPDATE/DELETE 模式 (高效，避免锁竞争)
 ```
 
-配置项：`catching_up_upsert_duration = "1m"`
+配置项：`catching_up_upsert_duration = "0"`（默认关闭）
+
+> **注意（D4 决策）：** 缓冲文件事务完整性（`schema-history-and-cache-integrity-design.md` §2.4）保证后，MySQL GTID 用 committed.position 精确标记最后完整事务，其他源用精确 position skip，不存在重叠区。UPSERT 安全窗口降级为可选防御性配置，默认关闭。仅在对事务完整性实现信心不足时开启。
 
 ### 6.3 断点续传
 
@@ -596,7 +598,7 @@ max-cache-size = "80%"
 
 # Catching-up
 [snapshot.catching-up]
-upsert-duration = "1m"                # 重启后 UPSERT 模式持续时间
+upsert-duration = "0"                 # 重启后 UPSERT 模式持续时间（默认关闭，见 D4 决策）
 batch-size = 1000                     # 回放批次大小
 ```
 

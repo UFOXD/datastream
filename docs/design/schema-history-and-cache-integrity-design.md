@@ -1,8 +1,8 @@
 # Schema History + 缓冲文件完整性设计
 
 > 创建时间：2026-05-24
-> 状态：**待设计（设计讨论进行中，部分决策未完成）**
-> 版本：v0.1（草案）
+> 状态：**所有决策已完成（D1-D3 已决，D4-D7 已决）**
+> 版本：v0.2
 
 ---
 
@@ -32,96 +32,702 @@
 | 无幂等写入 | `local_backend.go:Write()` | P2 | 重复写入产生两条相同记录，Read 会重复投递 |
 | Route 错误静默丢弃 | `pipeline_integration.go:routeEvents()` | P1 | `_ = p.consumer.Route(...)` 忽略所有错误 |
 
-### 2.2 大事务跨多表文件的核心问题
+### 2.2 跨表事务重复问题的根因分析
 
-**这是最严重的一致性问题。**
+**核心问题：进程崩溃后重启，源端重发整个事务，导致已写入 buffer 文件的事件被重复写入。**
 
-一个 GTID 事务的事件分散到多张表的缓冲文件中。如果写了一半进程崩溃，重启后从该 GTID 重新拉取完整事务，会导致部分表文件里有重复事件：
+一个事务的事件分散到多张表的缓冲文件中。写了一半崩溃，重启后源端重发完整事务，已写入的表文件出现重复：
 
 ```
-GTID:500 的事务包含:
+事务包含:
   INSERT INTO table_A (id=1)  → 写入 table_A.binlog ✅
   INSERT INTO table_A (id=2)  → 写入 table_A.binlog ✅
   INSERT INTO table_B (id=1)  → 写入 table_B.binlog ✅
   INSERT INTO table_B (id=2)  → 崩溃，未写入 ❌
   INSERT INTO table_C (id=1)  → 崩溃，未写入 ❌
 
-重启后从 GTID:500 重新拉取完整事务:
-  INSERT INTO table_A (id=1)  → 又写入 table_A.binlog ← 重复！
-  INSERT INTO table_A (id=2)  → 又写入 table_A.binlog ← 重复！
-  INSERT INTO table_B (id=1)  → 又写入 table_B.binlog ← 重复！
-  INSERT INTO table_B (id=2)  → 写入 table_B.binlog ✅
-  INSERT INTO table_C (id=1)  → 写入 table_C.binlog ✅
-
-结果: table_A 有 4 条（2 条重复），table_B 有 3 条（1 条重复），table_C 正常
+重启后源端重发完整事务:
+  table_A: 2 条重复（已有 2 条 + 重发 2 条 = 4 条）
+  table_B: 1 条重复（已有 1 条 + 重发 2 条 = 3 条）
+  table_C: 正常（0 条 + 重发 1 条 = 1 条）
 ```
 
-### 2.3 候选方案（待决策）
+**是否重复取决于两个因素：**
 
-#### 方案 A：全局 WAL + 按表索引
+1. **恢复时源端重发的粒度**：整个事务重发 vs 从精确位置继续
+2. **buffer 层能否区分已写入和未写入的事件**
 
-不直接按表分文件写，先写一个全局 WAL（所有表的事件顺序追加到同一个文件），以 COMMIT 标记事务完整性。按表 Read 时通过索引跳读。
+### 2.3 各源数据库事件投递与恢复特性
+
+| 源 | Position 格式 | 精度 | 恢复重发粒度 | 跨表重复？ |
+|---|---|---|---|---|
+| **MySQL GTID** | GTID | 事务级（无事务内子位置） | 整个事务重发，且 master-slave 切换后 binlog file/offset 失效 | **会** |
+| **MySQL 非 GTID** | (binlog_file, byte_offset) | 操作级（每条 event 独立 offset） | 从精确 byte_offset 继续；但 master-slave 切换后 file 名变 | **正常重连不会；failover 会** |
+| **PostgreSQL** | LSN | 操作级（每条变更独立 LSN） | 从精确 LSN 继续 | **不会** |
+| **Oracle** | SCN | 操作级（每条 redo 记录独立 SCN） | 从精确 SCN 继续 | **不会** |
+| **SQL Server** | (start_lsn, seqval) | 操作级（start_lsn 事务级 + seqval 操作序号） | 需要 seqval 才能精确恢复 | **取决于 seqval 追踪** |
+| **MongoDB** | resume_token | 事件级 | 从精确 token 继续 | **不会** |
+
+**关键发现：**
+- PostgreSQL/Oracle/MongoDB 的 position 精度足够，connector 层精确追踪 position 即可避免重复
+- MySQL GTID 无法在事务内做精确 skip，必须在 buffer 层做事务级保障
+- MySQL 非 GTID 正常重连可用 byte_offset skip，但 failover 后失效
+- SQL Server 追踪 `(start_lsn, seqval)` 组合即可精确恢复
+
+### 2.4 设计决策（D1）：按源分治 + 事务标记 truncate
+
+**保持按表分文件存储不变，根据源数据库类型选择不同的恢复策略。**
+
+#### 2.4.1 总体架构
+
+```mermaid
+graph TB
+    subgraph Source Connectors
+        MySQL["MySQL/MariaDB<br/>(GTID / file+pos)"]
+        PG["PostgreSQL<br/>(LSN)"]
+        Oracle["Oracle<br/>(SCN)"]
+        SQLS["SQL Server<br/>(lsn+seqval)"]
+        Mongo["MongoDB<br/>(resume_token)"]
+    end
+
+    subgraph Buffer Layer - LocalBackend
+        direction TB
+        TA["table_A.binlog<br/>[4B len][4B CRC32][CacheEvent][4B len]"]
+        TB2["table_B.binlog<br/>[4B len][4B CRC32][CacheEvent][4B len]"]
+        TC["table_C.binlog<br/>[4B len][4B CRC32][CacheEvent][4B len]"]
+    end
+
+    subgraph Metadata
+        M1["per-table 文件尾部记录<br/>position 与数据原子写入<br/>(PG/Oracle/Mongo/SQLS/MySQL非GTID)"]
+        M2["committed.position 文件<br/>write-then-rename + 目录 fsync<br/>(MySQL GTID 专用，存完整 gtid_set)"]
+        M3["master_uuid<br/>(MySQL 非 GTID failover 检测)"]
+    end
+
+    subgraph Recovery Layer
+        R1["精确 Position Skip"]
+        R2["事务标记 Truncate"]
+    end
+
+    MySQL -->|event + position| Buffer Layer
+    PG -->|event + position| Buffer Layer
+    Oracle -->|event + position| Buffer Layer
+    SQLS -->|event + position| Buffer Layer
+    Mongo -->|event + position| Buffer Layer
+
+    Buffer Layer --> M1
+    Buffer Layer --> M2
+    Buffer Layer --> M3
+
+    M1 --> R1
+    M2 --> R2
+    M3 --> R1
+
+    R1 -.->|"启动时: PG/Oracle/Mongo/SQLS/<br/>MySQL非GTID正常重连"| Buffer Layer
+    R2 -.->|"启动时: MySQL GTID /<br/>MySQL非GTID failover"| Buffer Layer
+```
+
+#### 2.4.2 完整写入流程（跨表事务）
+
+以下展示一个跨 3 张表的事务从源端到 buffer 文件的完整写入流程：
+
+```mermaid
+sequenceDiagram
+    participant Src as Source Connector
+    participant BL as Buffer Layer<br/>(LocalBackend)
+    participant TA as table_A.binlog
+    participant TB as table_B.binlog
+    participant TC as table_C.binlog
+    participant CG as committed.position<br/>(MySQL GTID 专用)
+
+    Note over Src: 事务开始 (tx=T1)
+
+    Src->>BL: event(table=A, pos=P1, tx=T1, seq=1)
+    BL->>BL: 构建 CacheEvent<br/>(source_type, position, tx_id, seq, payload)
+    BL->>BL: 计算 CRC32(len + payload)
+    BL->>TA: [4B len][4B crc][CacheEvent][4B len]
+    BL->>BL: fsync (if sync-mode=batch, 暂缓)
+
+    Src->>BL: event(table=A, pos=P2, tx=T1, seq=2)
+    BL->>TA: [4B len][4B crc][CacheEvent][4B len]
+
+    Src->>BL: event(table=B, pos=P3, tx=T1, seq=3)
+    BL->>TB: [4B len][4B crc][CacheEvent][4B len]
+
+    Src->>BL: event(table=B, pos=P4, tx=T1, seq=4)
+    BL->>TB: [4B len][4B crc][CacheEvent][4B len]
+
+    Src->>BL: event(table=C, pos=P5, tx=T1, seq=5)
+    BL->>TC: [4B len][4B crc][CacheEvent][4B len]
+
+    alt MySQL GTID 模式
+        Src->>BL: COMMIT(tx=T1)
+        BL->>TA: fsync
+        BL->>TB: fsync
+        BL->>TC: fsync
+        BL->>CG: 更新 committed = T1 → fsync
+    else 其他源 (PG/Oracle/SQLS/Mongo)
+        BL->>TA: fsync (每 N 条)
+        Note over BL: 每条 event 的 position<br/>已写入 CacheEvent<br/>恢复时用于精确 skip
+    end
+```
+
+#### 2.4.3 恢复策略一：精确 Position Skip（PG / Oracle / MongoDB / SQL Server / MySQL 非 GTID）
+
+适用于 position 精度为操作级的源。
+
+**Position 比较规则（按源类型分派）：**
+
+当前 `Position.Compare()` 只比较 CommitTime + SeqNo，不可靠。必须按 source_type 分派：
+
+| 源 | 比较字段 | 说明 |
+|---|---|---|
+| **PostgreSQL** | `LSN` | uint64 直接比较 |
+| **Oracle** | `SCN` | uint64 直接比较 |
+| **SQL Server** | `(ChangeLsn, SeqVal)` | 先比较 ChangeLsn，再比较 SeqVal |
+| **MySQL 非 GTID** | `(BinlogFile, BinlogPos)` | 先按文件名排序，再比较 offset |
+| **MongoDB** | resume_token | 不做客户端比较，用 `SetResumeAfter()` 恢复 |
+
+```go
+// Compare 按源类型分派 position 比较。
+// 仅适用于精确 position skip 的源（PG/Oracle/SQLServer/MySQL非GTID）。
+// MySQL GTID 模式不使用此方法——恢复时用 gtid_set 成员判断（tx_id ∈ committed_set）。
+// MongoDB 不使用此方法——恢复时用 SetResumeAfter(token)。
+func (p *Position) Compare(other *Position, sourceType SourceType) (int, error) {
+    switch sourceType {
+    case SourceTypePostgres:
+        return compareUint64(p.LSN, other.LSN), nil
+    case SourceTypeOracle:
+        return compareUint64(p.SCN, other.SCN), nil
+    case SourceTypeSQLServer:
+        if c := strings.Compare(p.ChangeLsn, other.ChangeLsn); c != 0 {
+            return c, nil
+        }
+        return strings.Compare(p.SeqVal, other.SeqVal), nil
+    case SourceTypeMySQLFilePos:
+        if c := strings.Compare(p.BinlogFile, other.BinlogFile); c != 0 {
+            return c, nil
+        }
+        return compareUint64(uint64(p.BinlogPos), uint64(other.BinlogPos)), nil
+    case SourceTypeMySQLGTID:
+        // MySQL GTID 恢复走 committed.position gtid_set 成员判断，不走 position 比较。
+        // 调用方应使用 gtid_set.Contains(tx_id) 而非 Compare()。
+        return 0, fmt.Errorf("MySQL GTID mode does not use Compare(); use gtid_set membership instead")
+    case SourceTypeMongoDB:
+        // MongoDB resume_token 是不透明 BSON，不做客户端大小比较。
+        // 恢复时直接用 SetResumeAfter(token)。
+        return 0, fmt.Errorf("MongoDB does not use Compare(); use SetResumeAfter() instead")
+    default:
+        return 0, fmt.Errorf("unsupported source type for comparison: %v", sourceType)
+    }
+}
+```
+
+**Compare() 使用范围说明：**
+
+| 源 | 是否使用 Compare() | 恢复方式 |
+|---|---|---|
+| PostgreSQL | ✅ | LSN skip |
+| Oracle | ✅ | SCN skip |
+| SQL Server | ✅ | (lsn, seqval) skip |
+| MySQL 非 GTID | ✅ | byte_offset skip / failover 时 truncate |
+| MySQL GTID | ❌ | gtid_set 成员判断 + truncate |
+| MongoDB | ❌ | SetResumeAfter() |
+
+**写入时序图：**
+
+```mermaid
+sequenceDiagram
+    participant Src as Source Connector
+    participant BL as Buffer Layer<br/>(LocalBackend)
+    participant TA as table_A.binlog
+    participant TB as table_B.binlog
+
+    Note over TA,TB: position 嵌在每条 CacheEvent 中<br/>无需单独元数据文件
+
+    Src->>BL: event(pos=P1, table=A, tx=T1)
+    BL->>TA: append [len][crc][CacheEvent(pos=P1)][len]
+
+    Src->>BL: event(pos=P2, table=B, tx=T1)
+    BL->>TB: append [len][crc][CacheEvent(pos=P2)][len]
+
+    Src->>BL: event(pos=P3, table=A, tx=T1)
+    BL->>TA: append [len][crc][CacheEvent(pos=P3)][len]
+
+    Note over BL: ── 进程崩溃 ──
+    Note over TA: 恢复时从尾部扫描<br/>最后一条完整记录 pos=P3
+    Note over TB: 恢复时从尾部扫描<br/>最后一条完整记录 pos=P2
+```
+
+**恢复流程图：**
+
+```mermaid
+flowchart TD
+    A([启动]) --> B[读取每个表文件的 last_position]
+    B --> C[取最小 position 作为恢复起点]
+    C --> D[通知源端从该 position 之后开始发送]
+    D --> E{收到 event}
+    E --> F{目标表的 last_position<br/>≥ event.position?}
+    F -->|YES| G[跳过 - 已写入]
+    F -->|NO| H[写入 buffer 文件<br/>更新 last_position]
+    G --> E
+    H --> E
+```
+
+**注意：min position 计算必须覆盖 connector 正在追踪的所有表，不仅是已有 buffer 文件的表。** 没有 buffer 文件的表，其有效 last_position 为 connector 的初始启动位点（"beginning of time"）。如果只取已有文件的 min，那些表会永久丢失初始位点到 min 之间的事件。
+
+实现方式：connector 启动时将初始位点持久化到 `meta/start_position` 文件。恢复时 `global_min = min(start_position, 各表文件尾部 position)`。
+
+**恢复时序图：**
+
+```mermaid
+sequenceDiagram
+    participant App as DataStream 启动
+    participant BL as Buffer Layer
+    participant TA as table_A.binlog
+    participant TB as table_B.binlog
+    participant TC as table_C.binlog
+    participant Src as Source Connector
+
+    App->>TA: 尾部反向扫描 → 最后完整记录 pos=P3
+    App->>TB: 尾部反向扫描 → 最后完整记录 pos=P2
+    App->>TC: 文件不存在
+
+    BL-->>App: 恢复起点 = min(P2, P3) = P2
+
+    App->>Src: 从 P2 之后开始发送
+
+    Src->>BL: event(pos=P2, table=B)
+    Note right of BL: P2 ≤ TB.last(P2) → 跳过
+
+    Src->>BL: event(pos=P3, table=A)
+    Note right of BL: P3 ≤ TA.last(P3) → 跳过
+
+    Src->>BL: event(pos=P4, table=B)
+    Note right of BL: P4 > TB.last(P2) → 写入
+
+    Src->>BL: event(pos=P5, table=C)
+    Note right of BL: TC 无记录 → 写入
+```
+
+**元数据存储：不需要单独的元数据文件。**
+
+每条 CacheEvent 已经包含 position，恢复时直接从 buffer 文件本身提取 last_position：
 
 ```
-WAL 文件格式:
-  [GTID:499 BEGIN]
-  [event: table_A, row1]
-  [event: table_A, row2]
-  [event: table_B, row1]
-  [GTID:499 COMMIT]        ← 这个事务完整
-  [GTID:500 BEGIN]
-  [event: table_A, row1]
-  [event: table_B, row1]
-  --- 崩溃，没有 COMMIT ---  ← 这个事务不完整
-
-重启后:
-  1. 找到最后一个 COMMIT 标记 → GTID:499
-  2. truncate 掉 GTID:500 的所有不完整数据
-  3. 从 GTID:500 开始重新拉取
+恢复时：
+1. 读 table_A.binlog 文件
+2. 从尾部反向扫描（利用尾部 4B length 字段），找到最后一条完整记录（首尾 length 一致 + CRC32 校验通过）
+3. 该记录的 position 即为 last_position
+4. 从该 position 之后重新拉取
 ```
 
-- 优点：写入原子性以 GTID 事务为单位，天然解决跨表问题
-- 缺点：按表回放需要索引跳读；单文件写入可能成为瓶颈
+这样 position 与数据原子写入（同一笔 len+CRC32+payload+len 全部落盘才算有效），不存在"写了数据没写 position"的不一致问题。半写入的记录尾部 length 缺失或 CRC32 校验失败，直接 truncate。
 
-#### 方案 B：保持按表分文件 + committed_gtids 元数据文件
+#### 2.4.4 恢复策略二：事务标记 Truncate（MySQL GTID）
 
-维护一个额外的元数据文件记录已完整提交的 GTID。
+GTID 模式下 position 是事务级，无法在事务内做精确 skip。采用事务标记 + 元数据 + truncate 方案。
+
+**写入时序图：**
+
+```mermaid
+sequenceDiagram
+    participant Src as MySQL Source<br/>(GTID mode)
+    participant BL as Buffer Layer
+    participant TA as table_A.binlog
+    participant TB as table_B.binlog
+    participant CG as committed.position 文件
+
+    Note over CG: 当前值: GTID:499
+
+    Src->>BL: BEGIN(GTID:500)
+    Note right of BL: 仅标记事务开始，不写入文件
+
+    Src->>BL: event(tx=500, seq=1, table=A)
+    BL->>TA: append(tx=500, seq=1)
+
+    Src->>BL: event(tx=500, seq=2, table=A)
+    BL->>TA: append(tx=500, seq=2)
+
+    Src->>BL: event(tx=500, seq=3, table=B)
+    BL->>TB: append(tx=500, seq=3)
+
+    Note over BL: ── 进程崩溃 ──<br/>table_A 有 tx=500 的 2 条记录<br/>table_B 有 tx=500 的 1 条记录<br/>committed.position 仍为旧值
+```
+
+**恢复流程图：**
+
+```mermaid
+flowchart TD
+    A([启动]) --> B[读取 committed.position<br/>= gtid_set]
+    B --> C{遍历每个表的<br/>.binlog 文件}
+    C --> D[从文件头正向扫描每条记录]
+    D --> E{tx_id ∈ gtid_set?}
+    E -->|YES| F[保留，记录偏移]
+    E -->|NO| G[标记待 truncate]
+    F --> H{还有下一条?}
+    G --> H
+    H -->|YES| D
+    H -->|NO| I[truncate 最后保留记录之后的所有数据]
+    I --> J{还有下一个表?}
+    J -->|YES| C
+    J -->|NO| K[StartSyncGTID 重新拉取]
+```
+
+**注意：并发事务导致 tx_id 可能交错（如 tx=499, tx=500, tx=499），必须正向扫描处理全部记录，不能反向扫描提前终止。**
+
+**恢复时序图：**
+
+```mermaid
+sequenceDiagram
+    participant App as DataStream 启动
+    participant BL as Buffer Layer
+    participant CG as committed.position 文件
+    participant TA as table_A.binlog
+    participant TB as table_B.binlog
+    participant TC as table_C.binlog
+    participant Src as MySQL Source
+
+    App->>CG: 读取 gtid_set
+    CG-->>App: "uuid:1-499"
+
+    App->>TA: 正向扫描，truncate tx_id ∉ gtid_set
+    Note right of TA: 删除 tx=500 的 2 条记录
+
+    App->>TB: 正向扫描，truncate tx_id ∉ gtid_set
+    Note right of TB: 删除 tx=500 的 1 条记录
+
+    App->>TC: 正向扫描
+    Note right of TC: 无 tx=500 的记录
+
+    App->>Src: StartSyncGTID("uuid:1-499")
+
+    Src->>BL: event(tx=500, seq=1, table=A)
+    BL->>TA: 正常写入，无重复
+
+    Src->>BL: event(tx=500, seq=3, table=B)
+    BL->>TB: 正常写入，无重复
+
+    Src->>BL: COMMIT(GTID:500)
+    BL->>CG: fsync 表文件 → 更新 committed.position (gtid_set) → fsync
+```
+
+使用 write-then-rename 原子更新：
+
+```mermaid
+sequenceDiagram
+    participant BL as Buffer Layer
+    participant TA as table_A.binlog
+    participant TB as table_B.binlog
+    participant TC as table_C.binlog
+    participant TMP as committed.position.tmp
+    participant CG as committed.position
+
+    Note over CG: 当前 gtid_set: "uuid:1-499"
+
+    BL->>TA: 写入 GTID:500 的事件
+    BL->>TB: 写入 GTID:500 的事件
+    BL->>TC: 写入 GTID:500 的事件
+
+    BL->>TA: fsync
+    BL->>TB: fsync
+    BL->>TC: fsync
+
+    BL->>TMP: 写入 gtid_set = "uuid:1-500"
+    BL->>TMP: fsync
+    BL->>CG: rename(tmp, committed.position)
+    BL->>CG: fsync 目录（保证 rename 持久化）
+
+    Note over BL,CG: 顺序必须严格保证:<br/>1. fsync 所有表文件<br/>2. write+fsync 临时文件<br/>3. rename<br/>4. fsync 目录<br/>任何步骤崩溃 → gtid_set 仍为旧值 → truncate → 无重复
+```
+
+**崩溃场景分析：**
+
+```mermaid
+flowchart LR
+    subgraph 正常完成
+        A[fsync 表文件] --> B[write+fsync tmp] --> C[rename] --> D[fsync 目录]
+    end
+
+    subgraph 崩溃场景
+        E["步骤 1-3 任一处崩溃"] --> F["gtid_set 仍为旧值"]
+        F --> G["恢复时 truncate 未完成事务"]
+        G --> H["重发，无重复 ✅"]
+
+        I["步骤 4 崩溃"] --> J{rename 是否已持久化?}
+        J -->|已持久化| K["gtid_set 为新值，表文件已 fsync ✅"]
+        J -->|未持久化| L["gtid_set 为旧值 → truncate → 重发 ✅"]
+    end
+```
+
+**committed.position 文件格式：**
+
+存储完整 executed GTID set（不是单个 GTID），因为 MySQL `StartSyncGTID()` 需要完整 set：
 
 ```
-meta/committed_gtids.log:
-  GTID:498 ✅
-  GTID:499 ✅
-  （GTID:500 不在这里 — 未完成）
-
-重启后:
-  1. 读 committed_gtids，最后完整 GTID = 499
-  2. 对所有表文件，truncate 掉 GTID:500 的事件
-  3. 从 GTID:500 开始重新拉取
+meta/committed.position:
+  source_type: mysql_gtids
+  gtid_set: "3E11FA47-71CA-11E1-9E33-C80AA9429562:1-500"
+  updated_at: 2026-06-02T10:30:00Z
+  checksum: CRC32
 ```
 
-- 优点：保持按表文件的 IO 模式，回放效率高
-- 缺点：truncate 需要知道各表文件中 GTID:500 的起始偏移（需要维护偏移索引）
+每次事务提交后，将新 GTID merge 到 set 中（如 `:500` → `:1-500`）。
 
-### 2.4 方案选定后的影响
+**注意：当前代码使用 `syncer.StartSync(mysql.Position{})` (file+pos 模式)，GTID 路径需要改用 `syncer.StartSyncGTID(gtidSet)`。**
 
-**选 A 或 B 后，事务级完整性保证了，`table-lifecycle-design.md` 中的 catching_up UPSERT 安全窗口（§6.2）可以删掉或降级为可选防御性配置（默认关闭）。**
+#### 2.4.5 MySQL 非 GTID + Failover 混合场景
+
+MySQL 非 GTID 模式下：
+- **正常重连**：用 byte_offset skip（精确到 event 级别，无重复）
+- **Failover**：byte_offset 失效，退化为事务级问题
+
+处理方式：
+1. 追踪 master UUID（`SELECT @@server_uuid`）
+2. 正常重连（UUID 不变）→ byte_offset skip
+3. Failover（UUID 变了）→ 检测到 master 切换 → 退化为 truncate 策略
+
+**MySQL 非 GTID 的 tx_id 定义：**
+
+非 GTID 模式没有全局事务标识。CacheEvent.tx_id 使用合成标识：
+
+```go
+// 合成 tx_id = binlog_file + BEGIN 事件的 byte_offset
+// 同一事务内的所有 event 共享同一 tx_id
+tx_id = fmt.Sprintf("%s:%d", binlogFile, beginEventOffset)
+```
+
+这个 tx_id 在同一 binlog server 内唯一。Failover 后 binlog file 名变了，旧 tx_id 与新 server 的 tx_id 不会冲突。
+
+**Failover 恢复流程：**
+1. 检测 master_uuid 变化
+2. 对所有表文件正向扫描，记录出现过的 tx_id 集合
+3. 找到文件中最后一个 `is_commit=true` 的记录，其 tx_id 之前的事务视为完整
+4. truncate 该 tx_id 之后的所有记录
+5. 从该 byte_offset + 1 重新拉取（注意：failover 后 byte_offset 失效，需要从新 master 的当前位点开始，接受可能的少量重复或丢失——这是非 GTID 模式的固有限制）
+
+**推荐：生产环境始终启用 GTID 模式。**
+
+```mermaid
+flowchart TD
+    A([MySQL 非 GTID 重连]) --> B[查询当前 master UUID]
+    B --> C{UUID 是否变化?}
+    C -->|UUID 不变<br/>正常重连| D[用 byte_offset 精确 skip]
+    C -->|UUID 变了<br/>发生了 failover| E[退化为 truncate 策略]
+
+    D --> D1[每条 event: 检查<br/>byte_offset ≤ last_position?]
+    D1 -->|YES| D2[跳过]
+    D1 -->|NO| D3[写入 buffer]
+
+    E --> E1[读取 last_committed_tx_id]
+    E1 --> E2[对所有表文件<br/>truncate 未完成事务]
+    E2 --> E3[从最后完整事务<br/>重新拉取]
+```
+
+#### 2.4.6 SQL Server 特殊处理
+
+SQL Server CDC 的 position 由 `(start_lsn, seqval)` 组成：
+- `start_lsn`：事务级（事务起始 LSN）
+- `seqval`：事务内操作序号
+
+当前实现只追踪 `start_lsn`，需要补充 `seqval` 追踪。
+
+```go
+// 当前: 只有 ChangeLsn (start_lsn)
+Position{ChangeLsn: "0x00000025:000001D8:0001"}
+
+// 改为: 追踪完整位置
+Position{
+    ChangeLsn:  "0x00000025:000001D8:0001",  // start_lsn
+    SeqVal:     "0x00000025:000001D8:0002",  // seqval (操作序号)
+}
+```
+
+恢复时用 `(start_lsn, seqval)` 做精确 skip，与 PostgreSQL LSN skip 逻辑相同。
+
+#### 2.4.7 各源恢复策略汇总
+
+| 源 | 写入时标记 | 恢复策略 | 元数据 |
+|---|---|---|---|
+| **MySQL GTID** | tx_id + event_seq | 事务标记 truncate | committed.position 文件（存完整 gtid_set，write-then-rename + 目录 fsync） |
+| **MySQL 非 GTID** | byte_offset + master_uuid | byte_offset skip / failover 时 truncate | per-table 文件尾部记录 + master_uuid |
+| **PostgreSQL** | LSN | LSN skip | per-table 文件尾部记录（无需额外元数据） |
+| **Oracle** | SCN | SCN skip | per-table 文件尾部记录（无需额外元数据） |
+| **SQL Server** | (start_lsn, seqval) | (lsn, seqval) skip | per-table 文件尾部记录（无需额外元数据） |
+| **MongoDB** | resume_token | 用 SetResumeAfter() 恢复，无需客户端 skip | per-table 文件尾部记录（无需额外元数据） |
+
+### 2.5 CacheEvent 格式改造
+
+当前 `CacheEvent` 使用 MySQL GTID 专用字段。改为通用格式：
+
+```protobuf
+// 当前 (MySQL 专用)
+message CacheEvent {
+    string gtid = 1;
+    int64  event_seq = 2;
+    bool   is_begin = 3;
+    bool   is_commit = 4;
+    bytes  payload = 5;
+    int64  timestamp_ms = 6;
+}
+
+// 改为 (通用)
+message CacheEvent {
+    // 源类型标识
+    SourceType source_type = 1;    // mysql_gtids / mysql_filepos / postgres / oracle / sqlserver / mongo
+
+    // 通用 position (序列化的 event.Position JSON)
+    bytes position = 2;
+
+    // 事务标识 (源特定)
+    string tx_id = 3;              // MySQL: GTID / file:offset hash; PG: xid; Oracle: XID; SQLServer: start_lsn
+
+    // 事务内序号
+    int64 event_seq = 4;
+
+    // 事务边界
+    bool is_begin = 5;
+    bool is_commit = 6;
+
+    // 事件负载
+    bytes payload = 7;
+
+    // 写入时间
+    int64 timestamp_ms = 8;
+
+    // MySQL 非 GTID 专用: byte_offset 用于精确 skip
+    uint64 byte_offset = 9;
+
+    // SQL Server 专用: seqval 用于精确 skip
+    string seq_val = 10;
+}
+
+enum SourceType {
+    SOURCE_TYPE_UNSPECIFIED = 0;
+    SOURCE_TYPE_MYSQL_GTID = 1;
+    SOURCE_TYPE_MYSQL_FILEPOS = 2;
+    SOURCE_TYPE_POSTGRES = 3;
+    SOURCE_TYPE_ORACLE = 4;
+    SOURCE_TYPE_SQLSERVER = 5;
+    SOURCE_TYPE_MONGODB = 6;
+}
+```
+
+**兼容性说明（Breaking Change）：**
+
+CacheEvent 从 6 字段扩展到 10 字段，wire format 不兼容。旧的 buffer 文件在新代码下无法反序列化。
+
+处理方式：**开发阶段直接废弃旧 buffer 文件，不写兼容代码。** 启动时如果检测到旧格式文件（通过字段数量或 record 长度异常判断），直接删除并从源端重新拉取。
+
+### 2.6 文件格式改造
+
+当前格式：`[4B length][N bytes protobuf]`
+
+改为：`[4B length][4B CRC32][N bytes protobuf][4B length]`
+
+```
+┌──────────┬──────────┬──────────────────┬──────────┐
+│ 4B len   │ 4B CRC32 │ N bytes payload  │ 4B len   │
+│ (BE)     │ (len+pb) │ (CacheEvent pb)  │ (BE,重复)│
+└──────────┴──────────┴──────────────────┴──────────┘
+```
+
+- CRC32 覆盖 `length_bytes || payload`（即前 4B + 中间 N B），length 字段损坏时立即检测
+- 尾部重复 length 字段，支持从文件尾部反向扫描：读最后 4B → 得到 record size → seek 回 record 起始 → 校验 CRC32
+- Read 时校验 CRC32，不匹配则记录错误并传播给调用方（不再静默 CaughtUp=true）
+- **最大记录长度校验**：读取 length 后检查 ≤ 可配置上限（默认 64MB），超限视为损坏记录
+
+### 2.7 Write 安全保障
+
+#### fsync 策略
+
+```go
+type SyncMode string
+
+const (
+    SyncModeEvery SyncMode = "every"   // 每条 event 写入后 fsync
+    SyncModeBatch SyncMode = "batch"   // 每 N 条或每事务 fsync
+    SyncModeNone  SyncMode = "none"    // 不主动 fsync（依赖 OS）
+)
+```
+
+推荐配置：
+- **MySQL GTID 模式**：`batch`（每事务 COMMIT 时 fsync，因为 committed.position 更新依赖表文件 fsync）
+- **其他源**：`batch`（每 N 条 fsync，平衡性能与安全）
+- **开发/测试**：`none`
+
+#### 部分写入检测
+
+启动时利用尾部 length 字段反向扫描每个表文件：
+
+1. seek 到文件末尾 - 4B → 读取尾部 length（= payload 大小 N）
+2. 校验 N ≤ 最大记录长度（默认 64MB），否则视为损坏
+3. seek 回 `file_size - N - 12`（= 记录起始位置）→ 读取完整记录（首部 len + CRC32 + payload + 尾部 len）
+4. 校验首尾 length 一致 → 校验 CRC32(len_bytes || payload)
+5. 不匹配 → truncate（`file_size = file_size - N - 12`）→ 回到步骤 1
+6. 匹配 → 最后一条完整记录，提取 position 作为 last_position
+
+#### Read 错误传播
+
+```go
+// ReadResult 包含事件流和错误流
+type ReadResult struct {
+    Events <-chan *CacheEvent  // 正常事件流
+    Err    <-chan error         // 至多一个致命错误（CRC 校验失败、IO 错误等）
+}
+
+// 契约:
+// - 正常结束: Events 和 Err 都关闭，Err 无值
+// - 遇到错误: 发送一个 error 到 Err，然后关闭 Events 和 Err
+// - context 取消: 关闭 Events 和 Err，Err 无值
+// - 消费者必须同时 select Events 和 Err
+```
+
+**接口变更说明（Breaking Change）：**
+
+当前 `BinlogCacheBackend.Read()` 返回 `<-chan *CacheEvent`（定义于 `table-lifecycle-design.md` §3.3）。改为返回 `ReadResult` 是破坏性变更。
+
+处理方式：**开发阶段直接废弃旧接口，不写兼容层。** 同步更新所有调用方：
+- `CatchingUpReplayer` — 改为消费 `ReadResult.Events` + `ReadResult.Err`
+- 所有测试中的 Read 调用
+
+### 2.8 Route 错误处理
+
+`pipeline_integration.go` 中 `routeEvents()` 当前静默丢弃 Route 错误：
+
+```go
+// 当前
+_ = p.consumer.Route(...)
+
+// 改为
+if err := p.consumer.Route(...); err != nil {
+    p.metrics.RouteErrors.Inc()
+    log.Error("route event failed", zap.Error(err))
+    // 可选: 重试 or 写入死信队列
+}
+```
+
+### 2.9 方案选定后的影响
+
+**事务级完整性保证后，`table-lifecycle-design.md` 中的 catching_up UPSERT 安全窗口（§6.2）可以删掉或降级为可选防御性配置（默认关闭）。**
 
 因为：
-- 重启后精确知道最后一个完整 COMMIT 的 GTID
-- 从下一个 GTID 开始拉取，不存在"重叠区"
+- MySQL GTID 模式：committed.position gtid_set 精确标记最后完整事务，无重叠区
+- 其他源：position 精确 skip，无重叠区
 - 不需要"前 1 分钟 UPSERT"来覆盖重叠
 
-### 2.5 其他完整性修复
+### 2.10 其他完整性修复清单
 
-无论选哪个方案，以下修复都需要做：
-
-| 修复项 | 说明 |
-|--------|------|
-| **Write 后 fsync** | 可配置 `sync-mode`: `every`（每条同步）/ `batch`（每 N 条或每事务同步）/ `none`（性能优先） |
-| **记录格式加 CRC32** | `[4B length][4B CRC32][N bytes protobuf]`，Read 时校验 |
-| **Read 错误传播** | 截断/损坏记录需要通知调用方，不能静默 CaughtUp=true |
-| **部分写入检测 + truncate** | 重启时检查最后一条记录是否完整，不完整则 truncate |
-| **Route 错误处理** | `pipeline_integration.go` 中记录 Route 错误而非静默丢弃 |
+| 修复项 | 优先级 | 说明 |
+|--------|--------|------|
+| **CacheEvent 格式通用化** | P0 | 新增 source_type / position / tx_id / byte_offset / seq_val |
+| **文件格式加 CRC32** | P0 | `[4B length][4B CRC32][N bytes protobuf][4B length]` |
+| **Write 后 fsync** | P0 | 可配置 sync-mode |
+| **Read 错误传播** | P0 | 独立 error channel |
+| **部分写入检测 + truncate** | P0 | 启动时校验文件尾部记录完整性 |
+| **committed.position 元数据** | P0 | MySQL GTID 模式专用，write-then-rename 原子更新 |
+| **master_uuid 追踪** | P1 | MySQL 非 GTID failover 检测 |
+| **SQL Server seqval 追踪** | P1 | 补充 seqval 到 Position |
+| **Route 错误处理** | P1 | 不再静默丢弃 |
 
 ---
 
@@ -146,6 +752,16 @@ T3: 查 INFORMATION_SCHEMA → 拿到 4 列        ← 用 4 列 schema 解析 3
 **问题 2：跨数据库不可用**
 
 跨库场景（MySQL→Oracle、PostgreSQL→MySQL），查目标库的 `INFORMATION_SCHEMA` 拿到的是目标端类型（如 Oracle 的 `VARCHAR2`），不是源端 binlog 需要的类型（MySQL 的 `VARCHAR`）。
+
+**各源 DML 解析对 Schema History 的依赖程度不同：**
+
+| 源 | DML 格式 | 是否需要 Schema History | 说明 |
+|---|---|---|---|
+| **MySQL / MariaDB** | Binlog Row Event（按列位置排列的原始值） | **必须** | 行数据无列名，必须用表结构还原 |
+| **PostgreSQL** | Logical Replication Message（按列位置） | **必须** | 同 MySQL |
+| **SQL Server** | CDC 变更行（按列位置） | **必须** | 同 MySQL |
+| **Oracle** | LogMiner SQL_REDO（自描述 SQL 文本） | **不需要** | SQL_REDO 包含列名和值（如 `INSERT INTO t(a,b) VALUES(1,2)`），Parser 直接解析文本，不依赖表结构。参见 `oracle-dml-parser-design.md` §4.2 |
+| **MongoDB** | Change Stream JSON（自描述） | **不需要** | 文档数据库天然自描述 |
 
 ### 3.2 Debezium 的做法（参考实现）
 
@@ -176,13 +792,21 @@ Debezium Schema History:
 
 #### Parser 接口
 
-Parser 不只产出 delta，直接负责合成新的完整 TableInfo：
+Parser 不只产出 delta，直接负责合成新的完整 TableInfo。`ApplyDDL` 作为 `DDLParser` 接口的新增方法，现有 `Parse()` 方法保持不变：
 
 ```go
-// ApplyDDL 解析 DDL 并基于旧表结构产出完整的新表结构
-// oldTable: CREATE 时为 nil，ALTER 时传入旧结构
-// 返回: DDLResult 包含 delta（供过滤/映射用）+ 新的完整 TableInfo（供 Schema History 存储）
-func (p *Parser) ApplyDDL(oldTable *event.TableInfo, ddl string) (*DDLResult, error)
+// DDLParser 接口扩展（现有 Parse 方法不变，新增 ApplyDDL）
+type DDLParser interface {
+    // 现有方法 — 不改动
+    Parse(ctx context.Context, ddl string) ([]*DDLResult, error)
+    SupportedTypes() []DDLType
+
+    // 新增方法 — B1 实现
+    // ApplyDDL 解析 DDL 并基于旧表结构产出完整的新表结构
+    // oldTable: CREATE 时为 nil，ALTER 时传入旧结构
+    // 返回: DDLResult 包含 delta（供过滤/映射用）+ 新的完整 TableInfo（供 Schema History 存储）
+    ApplyDDL(ctx context.Context, oldTable *event.TableInfo, ddl string) (*DDLResult, error)
+}
 
 type DDLResult struct {
     Type         DDLType           // CREATE / ALTER / DROP
@@ -443,7 +1067,7 @@ Parser.ApplyDDL(oldTable{Columns:[a,b,c]}, "ALTER TABLE t MODIFY b INT FIRST")
 | `internal/schema/local_history.go` | 新增 | LocalSchemaHistory 存储实现 |
 | `internal/schema/tables_test.go` | 新增 | Put/Get/Remove 测试 |
 | `internal/schema/local_history_test.go` | 新增 | Record + Recover 测试 |
-| `pkg/parser/parser.go` (或接口文件) | 修改 | 新增 `ApplyDDL(oldTable, ddl) → DDLResult` 接口方法 |
+| `pkg/parser/parser.go` (或接口文件) | 修改 | `DDLParser` 接口新增 `ApplyDDL(ctx, oldTable, ddl) → DDLResult` 方法（现有 `Parse()` 不动） |
 | `pkg/parser/mysql/visitor.go` | 修改 | ALTER 增强：CHANGE、AFTER/FIRST、完整类型、Nullable + ApplyDDL 实现 |
 | `pkg/parser/oracle/visitor.go` | 修改 | ALTER 重写为 ANTLR AST + ApplyDDL 实现 |
 | `pkg/parser/postgres/visitor.go` | 修改 | ALTER 增强：类型、SET NOT NULL、SET DEFAULT + ApplyDDL 实现 |
@@ -456,7 +1080,11 @@ Parser.ApplyDDL(oldTable{Columns:[a,b,c]}, "ALTER TABLE t MODIFY b INT FIRST")
 | `internal/source/sqlserver/connector.go` | 修改 | 同上 |
 | `internal/source/mariadb/connector.go` | 修改 | 同上 |
 | `internal/source/*/schema_cache.go` | 废弃 | 不再从 INFORMATION_SCHEMA 查询（逐步迁移后删除） |
-| `internal/cache/local_backend.go` | 修改 | fsync + CRC32 + 事务完整性 |
+| `internal/cache/local_backend.go` | 修改 | fsync + CRC32 + 尾部记录扫描恢复 + 事务 truncate |
+| `internal/cache/cache_event.proto` | 修改 | 通用化：source_type / position / tx_id / byte_offset / seq_val |
+| `internal/cache/recovery.go` | 新增 | 按源分治恢复逻辑（尾部扫描提取 last_position / committed.position truncate） |
+| `internal/cache/committed_position.go` | 新增 | committed.position 元数据文件管理（MySQL GTID 模式，write-then-rename + 目录 fsync） |
+| `internal/cache/start_position.go` | 新增 | connector 初始位点持久化（A1: 恢复时 min position 计算依赖） |
 | `internal/lifecycle/pipeline_integration.go` | 修改 | Route 错误处理；DDL 事件走 DDLRecord 流程 |
 
 ---
@@ -465,7 +1093,7 @@ Parser.ApplyDDL(oldTable{Columns:[a,b,c]}, "ALTER TABLE t MODIFY b INT FIRST")
 
 | 优先级 | 工作项 | 说明 |
 |--------|--------|------|
-| **P0** | 缓冲文件事务完整性 | 全局 WAL（方案 A）或 committed_gtids（方案 B）待决策后实现 |
+| **P0** | 缓冲文件事务完整性 | **已决策**：按源分治，MySQL GTID 用事务标记 truncate，其他源用精确 position skip |
 | **P0** | Parser `ApplyDDL()` 接口 + MySQL 增强 | 前置依赖：CHANGE/AFTER/FIRST/完整类型/Nullable；MySQL 流量最大先做 |
 | **P0** | Schema History 接口 + 存储 + Recover | 核心机制，所有 connector 依赖 |
 | **P0** | DDL 应用状态跟踪 | DDLRecord + DDLStatus，目标端执行成功后才更新 Tables |
@@ -479,12 +1107,12 @@ Parser.ApplyDDL(oldTable{Columns:[a,b,c]}, "ALTER TABLE t MODIFY b INT FIRST")
 
 ## 7. 待决策事项
 
-| 编号 | 事项 | 选项 | 状态 |
+| 编号 | 事项 | 决策 | 状态 |
 |------|------|------|------|
-| D1 | 缓冲事务完整性方案 | A. 全局 WAL + 按表索引 / B. 分文件 + committed_gtids | **未决** |
-| D2 | Schema History 存储后端 | 单文件（全量记录顺序追加）/ 按表分文件 / 复用 WAL（如果 D1 选 A） | **未决** |
-| D3 | History 序列化格式 | Protobuf / JSON | **未决** |
-| D4 | catching_up UPSERT 安全窗口 | 删除 / 降级为可选（默认关闭）| 取决于 D1 |
+| D1 | 缓冲事务完整性方案 | **按源分治**：保持按表分文件 + 事务标记 truncate（MySQL GTID）/ 精确 position skip（其他源） | **已决** |
+| D2 | Schema History 存储后端 | **单文件顺序追加**（DDL 频率低，实现简单，无需处理跨表文件管理） | **已决** |
+| D3 | History 序列化格式 | **Protobuf**（紧凑存储，配套 proto→json 转换工具供调试查看） | **已决** |
+| D4 | catching_up UPSERT 安全窗口 | **降级为可选（默认关闭）**，因为事务完整性保证后无重叠区 | **已决** |
 | D5 | DDL 失败后的恢复策略 | 表进 error 等人工介入（retry DDL / skip + 手动同步 schema） | **已决** |
 | D6 | Parser 职责边界 | Parser.ApplyDDL() 负责合成完整 TableInfo，Tables 只做存储 | **已决** |
 | D7 | Schema History 写入时机 | 目标端 DDL 执行成功后才写入 History + 更新内存 Tables | **已决** |
