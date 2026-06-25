@@ -292,7 +292,7 @@ func (s *BinlogSyncer) handleQueryEvent(ev *replication.BinlogEvent) error {
 		Position: event.Position{
 			BinlogFile: s.currentFile,
 			BinlogPos:  ev.Header.LogPos,
-			CommitTime: time.Now(),
+			CommitTime: time.Unix(int64(ev.Header.Timestamp), 0),
 		},
 	}
 
@@ -417,16 +417,33 @@ func (s *BinlogSyncer) handleXIDEvent(ev *replication.BinlogEvent) error {
 	s.position = &event.Position{
 		BinlogFile: s.currentFile,
 		BinlogPos:  ev.Header.LogPos,
-		CommitTime: time.Now(),
+		CommitTime: time.Unix(int64(ev.Header.Timestamp), 0),
 	}
 	s.positionMu.Unlock()
 
 	return nil
 }
 
-// handleGTIDEvent handles GTID events.
+// handleGTIDEvent captures the GTID from the GTID event into the current position.
 func (s *BinlogSyncer) handleGTIDEvent(ev *replication.BinlogEvent) error {
-	// GTID handling - update position with GTID info if needed
+	gtidEv, ok := ev.Event.(*replication.GTIDEvent)
+	if !ok {
+		return nil
+	}
+
+	// SID is 16 bytes (UUID). Format as standard UUID string.
+	sid := gtidEv.SID
+	uuid := fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		sid[0:4], sid[4:6], sid[6:8], sid[8:10], sid[10:16])
+	gtid := fmt.Sprintf("%s:%d", uuid, gtidEv.GNO)
+
+	s.positionMu.Lock()
+	if s.position == nil {
+		s.position = &event.Position{}
+	}
+	s.position.TxID = gtid
+	s.positionMu.Unlock()
+
 	return nil
 }
 
@@ -492,7 +509,7 @@ func (s *BinlogSyncer) buildChangeEvents(eventType event.EventType, header *repl
 				Position: event.Position{
 					BinlogFile: s.currentFile,
 					BinlogPos:  header.LogPos,
-					CommitTime: time.Now(),
+					CommitTime: time.Unix(int64(header.Timestamp), 0),
 				},
 			})
 		}
@@ -520,7 +537,7 @@ func (s *BinlogSyncer) buildChangeEvents(eventType event.EventType, header *repl
 				Position: event.Position{
 					BinlogFile: s.currentFile,
 					BinlogPos:  header.LogPos,
-					CommitTime: time.Now(),
+					CommitTime: time.Unix(int64(header.Timestamp), 0),
 				},
 			})
 		}
@@ -538,7 +555,7 @@ func (s *BinlogSyncer) buildChangeEvents(eventType event.EventType, header *repl
 				Position: event.Position{
 					BinlogFile: s.currentFile,
 					BinlogPos:  header.LogPos,
-					CommitTime: time.Now(),
+					CommitTime: time.Unix(int64(header.Timestamp), 0),
 				},
 			})
 		}

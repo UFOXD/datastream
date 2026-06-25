@@ -24,6 +24,7 @@ type Position struct {
 
 	// SQL Server position
 	ChangeLsn string `json:"changeLsn,omitempty"`
+	SeqVal    string `json:"seqVal,omitempty"` // SQL Server seqval for precise skip
 
 	// MySQL GTID Set (e.g., "3E11FA47-71CA-11E1-9E33-C80AA9429562:1-5")
 	GTID string `json:"gtid,omitempty"`
