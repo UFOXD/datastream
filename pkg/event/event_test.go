@@ -47,9 +47,7 @@ func TestChangeEventIsDDL(t *testing.T) {
 	}
 }
 
-func TestPositionCompare(t *testing.T) {
-	now := time.Now()
-
+func TestPositionComparePostgres(t *testing.T) {
 	tests := []struct {
 		name     string
 		p1       *Position
@@ -57,58 +55,28 @@ func TestPositionCompare(t *testing.T) {
 		expected int
 	}{
 		{
-			name: "p1 before p2 by time",
-			p1: &Position{
-				CommitTime: now,
-				SeqNo:      1,
-			},
-			p2: &Position{
-				CommitTime: now.Add(time.Second),
-				SeqNo:      1,
-			},
+			name:     "p1 LSN less than p2",
+			p1:       &Position{LSN: 100},
+			p2:       &Position{LSN: 200},
 			expected: -1,
 		},
 		{
-			name: "p1 after p2 by time",
-			p1: &Position{
-				CommitTime: now.Add(time.Second),
-				SeqNo:      1,
-			},
-			p2: &Position{
-				CommitTime: now,
-				SeqNo:      1,
-			},
+			name:     "p1 LSN greater than p2",
+			p1:       &Position{LSN: 300},
+			p2:       &Position{LSN: 200},
 			expected: 1,
 		},
 		{
-			name: "equal positions",
-			p1: &Position{
-				CommitTime: now,
-				SeqNo:      1,
-			},
-			p2: &Position{
-				CommitTime: now,
-				SeqNo:      1,
-			},
+			name:     "equal LSN",
+			p1:       &Position{LSN: 200},
+			p2:       &Position{LSN: 200},
 			expected: 0,
-		},
-		{
-			name: "same time, different seqno",
-			p1: &Position{
-				CommitTime: now,
-				SeqNo:      1,
-			},
-			p2: &Position{
-				CommitTime: now,
-				SeqNo:      2,
-			},
-			expected: -1,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := tt.p1.Compare(tt.p2)
+			result, err := tt.p1.Compare(tt.p2, SourceTypePostgres)
 			if err != nil {
 				t.Fatalf("Compare failed: %v", err)
 			}
@@ -116,6 +84,178 @@ func TestPositionCompare(t *testing.T) {
 				t.Errorf("Expected %d, got %d", tt.expected, result)
 			}
 		})
+	}
+}
+
+func TestPositionCompareOracle(t *testing.T) {
+	tests := []struct {
+		name     string
+		p1       *Position
+		p2       *Position
+		expected int
+	}{
+		{name: "less", p1: &Position{SCN: 100}, p2: &Position{SCN: 200}, expected: -1},
+		{name: "greater", p1: &Position{SCN: 300}, p2: &Position{SCN: 200}, expected: 1},
+		{name: "equal", p1: &Position{SCN: 200}, p2: &Position{SCN: 200}, expected: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := tt.p1.Compare(tt.p2, SourceTypeOracle)
+			if err != nil {
+				t.Fatalf("Compare failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %d, got %d", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestPositionCompareSQLServer(t *testing.T) {
+	tests := []struct {
+		name     string
+		p1       *Position
+		p2       *Position
+		expected int
+	}{
+		{
+			name:     "different ChangeLsn",
+			p1:       &Position{ChangeLsn: "0x00000025:000001D8:0001", SeqVal: "0x01"},
+			p2:       &Position{ChangeLsn: "0x00000025:000001D9:0001", SeqVal: "0x01"},
+			expected: -1,
+		},
+		{
+			name:     "same ChangeLsn, different SeqVal",
+			p1:       &Position{ChangeLsn: "0x00000025:000001D8:0001", SeqVal: "0x01"},
+			p2:       &Position{ChangeLsn: "0x00000025:000001D8:0001", SeqVal: "0x02"},
+			expected: -1,
+		},
+		{
+			name:     "equal",
+			p1:       &Position{ChangeLsn: "0x00000025:000001D8:0001", SeqVal: "0x01"},
+			p2:       &Position{ChangeLsn: "0x00000025:000001D8:0001", SeqVal: "0x01"},
+			expected: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := tt.p1.Compare(tt.p2, SourceTypeSQLServer)
+			if err != nil {
+				t.Fatalf("Compare failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %d, got %d", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestPositionCompareMySQLFilePos(t *testing.T) {
+	tests := []struct {
+		name     string
+		p1       *Position
+		p2       *Position
+		expected int
+	}{
+		{
+			name:     "different binlog file",
+			p1:       &Position{BinlogFile: "mysql-bin.000001", BinlogPos: 100},
+			p2:       &Position{BinlogFile: "mysql-bin.000002", BinlogPos: 100},
+			expected: -1,
+		},
+		{
+			name:     "same file, different pos",
+			p1:       &Position{BinlogFile: "mysql-bin.000001", BinlogPos: 100},
+			p2:       &Position{BinlogFile: "mysql-bin.000001", BinlogPos: 200},
+			expected: -1,
+		},
+		{
+			name:     "equal",
+			p1:       &Position{BinlogFile: "mysql-bin.000001", BinlogPos: 100},
+			p2:       &Position{BinlogFile: "mysql-bin.000001", BinlogPos: 100},
+			expected: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := tt.p1.Compare(tt.p2, SourceTypeMySQLFilePos)
+			if err != nil {
+				t.Fatalf("Compare failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %d, got %d", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestPositionCompareUnsupportedSources(t *testing.T) {
+	p := &Position{TxID: "uuid:1-500"}
+
+	_, err := p.Compare(&Position{TxID: "uuid:1-500"}, SourceTypeMySQLGTID)
+	if err == nil {
+		t.Error("Expected error for MySQL GTID, got nil")
+	}
+
+	_, err = p.Compare(&Position{}, SourceTypeMongoDB)
+	if err == nil {
+		t.Error("Expected error for MongoDB, got nil")
+	}
+
+	_, err = p.Compare(&Position{}, SourceTypeUnspecified)
+	if err == nil {
+		t.Error("Expected error for unspecified source type, got nil")
+	}
+}
+
+func TestPositionCloneNewFields(t *testing.T) {
+	p := &Position{
+		BinlogFile:  "mysql-bin.000001",
+		BinlogPos:   100,
+		LSN:         200,
+		SCN:         300,
+		ChangeLsn:   "0x01",
+		SeqVal:      "0x02",
+		ResumeToken: []byte{0x01, 0x02, 0x03},
+		CommitTime:  time.Now(),
+		TxID:        "tx-1",
+	}
+
+	clone := p.Clone()
+
+	// Verify all fields copied
+	if clone.SeqVal != p.SeqVal {
+		t.Errorf("SeqVal: expected %s, got %s", p.SeqVal, clone.SeqVal)
+	}
+	if string(clone.ResumeToken) != string(p.ResumeToken) {
+		t.Errorf("ResumeToken mismatch")
+	}
+
+	// Verify deep copy (modifying clone doesn't affect original)
+	clone.ResumeToken[0] = 0xFF
+	if p.ResumeToken[0] == 0xFF {
+		t.Error("Clone is not a deep copy for ResumeToken")
+	}
+}
+
+func TestPositionIsZeroNewFields(t *testing.T) {
+	p := &Position{}
+	if !p.IsZero() {
+		t.Error("Expected zero position")
+	}
+
+	p.SeqVal = "0x01"
+	if p.IsZero() {
+		t.Error("Expected non-zero position with SeqVal set")
+	}
+
+	p2 := &Position{}
+	p2.ResumeToken = []byte{0x01}
+	if p2.IsZero() {
+		t.Error("Expected non-zero position with ResumeToken set")
 	}
 }
 
