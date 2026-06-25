@@ -1,7 +1,11 @@
 // Package parser provides DDL parsing functionality for DataStream.
 package parser
 
-import "context"
+import (
+	"context"
+
+	"github.com/UFOXD/datastream/pkg/event"
+)
 
 // DDLParser defines the interface for DDL statement parsing.
 // Only MySQL/MariaDB require full DDL parsing; other databases
@@ -10,6 +14,12 @@ type DDLParser interface {
 	// Parse parses one or more DDL statements (separated by semicolons) and returns structured results.
 	// Returns a slice of DDLResult, one for each successfully parsed statement.
 	Parse(ctx context.Context, ddl string) ([]*DDLResult, error)
+
+	// ApplyDDL applies a DDL statement to a table structure and returns the resulting new table structure.
+	// For CREATE: oldTable is nil, returns new TableInfo built from the DDL.
+	// For ALTER: oldTable is the existing structure, returns cloned structure with changes applied.
+	// For DROP: returns DDLResult with NewTableInfo=nil.
+	ApplyDDL(ctx context.Context, oldTable *event.TableInfo, ddl string) (*DDLResult, error)
 
 	// SupportedTypes returns the DDL types this parser can handle.
 	SupportedTypes() []DDLType
@@ -74,6 +84,12 @@ type DDLResult struct {
 
 	// Index changes (for CREATE/DROP INDEX)
 	IndexChanges *IndexChanges `json:"indexChanges,omitempty"`
+
+	// NewTableInfo is the resulting table structure after applying the DDL.
+	// For CREATE: built from DDL column definitions.
+	// For ALTER: cloned from oldTable with changes applied.
+	// For DROP: nil.
+	NewTableInfo *event.TableInfo `json:"newTableInfo,omitempty"`
 
 	// Additional metadata
 	Metadata map[string]interface{} `json:"metadata,omitempty"`

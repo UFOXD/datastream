@@ -3,7 +3,9 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/UFOXD/datastream/pkg/event"
 	"github.com/UFOXD/datastream/pkg/parser"
 	"github.com/UFOXD/datastream/pkg/parser/postgres/generated"
 	"github.com/antlr4-go/antlr/v4"
@@ -73,3 +75,13 @@ func (p *Parser) SupportedTypes() []parser.DDLType {
 
 // Ensure Parser implements DDLParser interface
 var _ parser.DDLParser = (*Parser)(nil)
+
+// ApplyDDL is not yet implemented for PostgreSQL.
+func (p *Parser) ApplyDDL(_ context.Context, _ *event.TableInfo, _ string) (*parser.DDLResult, error) {
+	return nil, fmt.Errorf("ApplyDDL not yet implemented for %s", p.Name())
+}
+
+// Name returns the parser name.
+func (p *Parser) Name() string {
+	return "postgres"
+}

@@ -251,32 +251,46 @@ func (v *DDLVisitor) extractColumns(ctx *generated.CreateDefinitionsContext, cha
 	}
 }
 
-// VisitCreateDefinition handles a column definition.
+// VisitCreateDefinition handles a column definition (fallback for non-column definitions).
 func (v *DDLVisitor) VisitCreateDefinition(ctx *generated.CreateDefinitionContext) interface{} {
 	col := &parser.ColumnInfo{
 		Nullable: true,
 	}
 
-	// Check for column declaration
+	// Fallback: parse from text for non-column definitions (index, constraint, etc.)
 	text := ctx.GetText()
-
-	// Parse column name and type from text
 	parts := strings.Fields(text)
 	if len(parts) >= 1 {
 		col.Name = strings.Trim(parts[0], "`")
 	}
 	if len(parts) >= 2 {
-		// Handle types with parameters like VARCHAR(255)
 		col.Type = parts[1]
 	}
-
-	// Check for constraints
 	upperText := strings.ToUpper(text)
 	if strings.Contains(upperText, "NOTNULL") || strings.Contains(upperText, "PRIMARY") {
 		col.Nullable = false
 	}
 	if strings.Contains(upperText, "AUTO_INCREMENT") {
 		col.AutoIncrement = true
+	}
+
+	return col
+}
+
+// VisitColumnDeclaration handles a column declaration (column_name column_definition).
+func (v *DDLVisitor) VisitColumnDeclaration(ctx *generated.ColumnDeclarationContext) interface{} {
+	col := &parser.ColumnInfo{
+		Nullable: true,
+	}
+
+	// Extract column name from FullColumnName
+	if fcn := ctx.FullColumnName(); fcn != nil {
+		col.Name = strings.Trim(fcn.GetText(), "`")
+	}
+
+	// Extract column details from ColumnDefinition
+	if colDef := ctx.ColumnDefinition(); colDef != nil {
+		v.extractColumnInfo(colDef.(*generated.ColumnDefinitionContext), col)
 	}
 
 	return col
@@ -347,6 +361,90 @@ type alterResult struct {
 	modifiedColumn *parser.ColumnModification
 }
 
+// VisitAlterByChangeColumn handles CHANGE COLUMN specification.
+func (v *DDLVisitor) VisitAlterByChangeColumn(ctx *generated.AlterByChangeColumnContext) interface{} {
+	result := &alterResult{}
+
+	uids := ctx.AllUid()
+	if len(uids) < 2 {
+		return result
+	}
+
+	oldColName := v.extractUidText(uids[0])
+	newColName := v.extractUidText(uids[1])
+
+	newCol := &parser.ColumnInfo{
+		Name:     newColName,
+		Nullable: true,
+	}
+
+	if colDef := ctx.ColumnDefinition(); colDef != nil {
+		v.extractColumnInfo(colDef.(*generated.ColumnDefinitionContext), newCol)
+	}
+
+	result.modifiedColumn = &parser.ColumnModification{
+		Old: parser.ColumnInfo{Name: oldColName},
+		New: *newCol,
+	}
+
+	return result
+}
+
+// extractColumnInfo extracts type, nullable, default, comment, and auto-increment from a ColumnDefinition.
+func (v *DDLVisitor) extractColumnInfo(ctx *generated.ColumnDefinitionContext, col *parser.ColumnInfo) {
+	// Extract type from DataType
+	if dataType := ctx.DataType(); dataType != nil {
+		col.Type = dataType.GetText()
+	}
+
+	// Extract constraints
+	for _, constraint := range ctx.AllColumnConstraint() {
+		v.processColumnConstraint(constraint, col)
+	}
+}
+
+// processColumnConstraint processes a single column constraint.
+func (v *DDLVisitor) processColumnConstraint(ctx generated.IColumnConstraintContext, col *parser.ColumnInfo) {
+	// NULL / NOT NULL
+	if nullCtx, ok := ctx.(*generated.NullColumnConstraintContext); ok {
+		if nn := nullCtx.NullNotnull(); nn != nil {
+			nnCtx := nn.(*generated.NullNotnullContext)
+			if nnCtx.NOT() != nil {
+				col.Nullable = false
+			} else {
+				col.Nullable = true
+			}
+		}
+		return
+	}
+
+	// PRIMARY KEY
+	if _, ok := ctx.(*generated.PrimaryKeyColumnConstraintContext); ok {
+		col.Nullable = false
+		return
+	}
+
+	// AUTO_INCREMENT
+	if _, ok := ctx.(*generated.AutoIncrementColumnConstraintContext); ok {
+		col.AutoIncrement = true
+		return
+	}
+
+	// DEFAULT
+	if defCtx, ok := ctx.(*generated.DefaultColumnConstraintContext); ok {
+		if defCtx.DEFAULT() != nil {
+			// The default value is the text after the DEFAULT keyword.
+			// Use the full text and strip the "DEFAULT" prefix.
+			fullText := defCtx.GetText()
+			const defaultPrefix = "DEFAULT"
+			if len(fullText) > len(defaultPrefix) {
+				col.DefaultValue = fullText[len(defaultPrefix):]
+			}
+		}
+		return
+	}
+}
+
 // VisitAlterByAddColumn handles ADD COLUMN specification (singular form).
 func (v *DDLVisitor) VisitAlterByAddColumn(ctx *generated.AlterByAddColumnContext) interface{} {
 	result := &alterResult{}
@@ -357,7 +455,7 @@ func (v *DDLVisitor) VisitAlterByAddColumn(ctx *generated.AlterByAddColumnContex
 			Nullable: true,
 		}
 		if colDef := ctx.ColumnDefinition(); colDef != nil {
-			col.Type = colDef.GetText()
+			v.extractColumnInfo(colDef.(*generated.ColumnDefinitionContext), col)
 		}
 		result.addedColumn = col
 	}
@@ -404,7 +502,7 @@ func (v *DDLVisitor) VisitAlterByModifyColumn(ctx *generated.AlterByModifyColumn
 			Nullable: true,
 		}
 		if colDef := ctx.ColumnDefinition(); colDef != nil {
-			newCol.Type = colDef.GetText()
+			v.extractColumnInfo(colDef.(*generated.ColumnDefinitionContext), newCol)
 		}
 		result.modifiedColumn = &parser.ColumnModification{
 			Old: parser.ColumnInfo{Name: newCol.Name},
