@@ -39,9 +39,10 @@ func NewLifecyclePipeline(
 	cacheBackend cache.BinlogCacheBackend,
 	store source.TableLifecycleStore,
 	taskID string,
+	sourceType cache.SourceType,
 ) *LifecyclePipeline {
 	sinkAdapter := &SinkAdapter{sink: sinks[0]}
-	consumer := NewBinlogConsumer(taskID, store, cacheBackend, sinkAdapter)
+	consumer := NewBinlogConsumer(taskID, store, cacheBackend, sinkAdapter, sourceType)
 
 	return &LifecyclePipeline{
 		source:    src,

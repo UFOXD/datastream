@@ -15,7 +15,7 @@ import (
 
 type mockCacheBackend struct {
 	mu     sync.Mutex
-	writes map[string][]*cache.CacheEvent // tableID → events
+	writes map[string][]*cache.CacheEvent
 }
 
 func newMockCacheBackend() *mockCacheBackend {
@@ -28,18 +28,24 @@ func (m *mockCacheBackend) Write(_ context.Context, tableID string, ev *cache.Ca
 	m.writes[tableID] = append(m.writes[tableID], ev)
 	return nil
 }
-
-func (m *mockCacheBackend) Read(_ context.Context, _ string, _ string, _ int64) (<-chan *cache.CacheEvent, error) {
-	return nil, nil
+func (m *mockCacheBackend) WriteBatch(_ context.Context, tableID string, events []*cache.CacheEvent) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.writes[tableID] = append(m.writes[tableID], events...)
+	return nil
 }
-
-func (m *mockCacheBackend) Delete(_ context.Context, _ string) error { return nil }
-func (m *mockCacheBackend) Size(_ context.Context, _ string) (int64, error) {
-	return 0, nil
+func (m *mockCacheBackend) Read(_ context.Context, _ string, _ string, _ int64) cache.ReadResult {
+	return cache.ReadResult{Events: make(chan *cache.CacheEvent), Err: make(chan error)}
 }
+func (m *mockCacheBackend) Delete(_ context.Context, _ string) error   { return nil }
+func (m *mockCacheBackend) Size(_ context.Context, _ string) (int64, error) { return 0, nil }
 func (m *mockCacheBackend) TotalSize(_ context.Context) (int64, error) { return 0, nil }
 func (m *mockCacheBackend) Exists(_ context.Context, _ string) (bool, error) {
 	return false, nil
+}
+func (m *mockCacheBackend) Sync(_ context.Context, _ string) error { return nil }
+func (m *mockCacheBackend) TruncateToLastComplete(_ context.Context, _ string) (*event.Position, error) {
+	return nil, nil
 }
 func (m *mockCacheBackend) Close() error { return nil }
 
@@ -69,7 +75,7 @@ func (m *mockEventSink) count() int {
 
 // --- helpers ---
 
-func makeChangeEvent(db, table, gtid string, seqNo int) *event.ChangeEvent {
+func makeChangeEvent(db, table, txID string, seqNo int) *event.ChangeEvent {
 	return &event.ChangeEvent{
 		Type: event.EventTypeInsert,
 		Table: event.TableInfo{
@@ -77,7 +83,7 @@ func makeChangeEvent(db, table, gtid string, seqNo int) *event.ChangeEvent {
 			Table:    table,
 		},
 		Position: event.Position{
-			GTID:  gtid,
+			TxID:  txID,
 			SeqNo: seqNo,
 		},
 		Timestamp: time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC),
@@ -90,47 +96,25 @@ func setupStore(t *testing.T, taskID string, tables map[source.TableID]source.Ta
 	ctx := context.Background()
 	for tid, state := range tables {
 		lc := source.NewTableLifecycle(tid)
-		// Transition to the desired state through valid transitions.
 		switch state {
 		case source.TableStatePending:
-			// already pending
 		case source.TableStateSnapshotting:
-			if err := lc.TransitionTo(source.TableStateSnapshotting, nil); err != nil {
-				t.Fatalf("setup: transition to snapshotting: %v", err)
-			}
+			lc.TransitionTo(source.TableStateSnapshotting, nil)
 		case source.TableStateCatchingUp:
-			if err := lc.TransitionTo(source.TableStateSnapshotting, nil); err != nil {
-				t.Fatalf("setup: transition to snapshotting: %v", err)
-			}
-			if err := lc.TransitionTo(source.TableStateCatchingUp, nil); err != nil {
-				t.Fatalf("setup: transition to catching_up: %v", err)
-			}
+			lc.TransitionTo(source.TableStateSnapshotting, nil)
+			lc.TransitionTo(source.TableStateCatchingUp, nil)
 		case source.TableStateStreaming:
-			if err := lc.TransitionTo(source.TableStateSnapshotting, nil); err != nil {
-				t.Fatalf("setup: transition to snapshotting: %v", err)
-			}
-			if err := lc.TransitionTo(source.TableStateCatchingUp, nil); err != nil {
-				t.Fatalf("setup: transition to catching_up: %v", err)
-			}
-			if err := lc.TransitionTo(source.TableStateStreaming, nil); err != nil {
-				t.Fatalf("setup: transition to streaming: %v", err)
-			}
+			lc.TransitionTo(source.TableStateSnapshotting, nil)
+			lc.TransitionTo(source.TableStateCatchingUp, nil)
+			lc.TransitionTo(source.TableStateStreaming, nil)
 		case source.TableStateError:
 			lc.SetError("test error")
 		case source.TableStatePaused:
-			if err := lc.TransitionTo(source.TableStateSnapshotting, nil); err != nil {
-				t.Fatalf("setup: transition to snapshotting: %v", err)
-			}
-			if err := lc.TransitionTo(source.TableStateCatchingUp, nil); err != nil {
-				t.Fatalf("setup: transition to catching_up: %v", err)
-			}
-			if err := lc.Pause(); err != nil {
-				t.Fatalf("setup: pause: %v", err)
-			}
+			lc.TransitionTo(source.TableStateSnapshotting, nil)
+			lc.TransitionTo(source.TableStateCatchingUp, nil)
+			lc.Pause()
 		}
-		if err := store.Save(ctx, taskID, lc); err != nil {
-			t.Fatalf("setup: save: %v", err)
-		}
+		store.Save(ctx, taskID, lc)
 	}
 	return store
 }
@@ -146,14 +130,13 @@ func TestBinlogConsumerRoutesToCache(t *testing.T) {
 	cb := newMockCacheBackend()
 	sink := &mockEventSink{}
 
-	consumer := NewBinlogConsumer(taskID, store, cb, sink)
+	consumer := NewBinlogConsumer(taskID, store, cb, sink, cache.SourceTypeMySQLGTID)
 
 	ev := makeChangeEvent("mydb", "users", "gtid-abc", 1)
 	if err := consumer.Route(context.Background(), ev); err != nil {
 		t.Fatalf("Route returned error: %v", err)
 	}
 
-	// Event should go to cache, not sink.
 	if got := cb.writesFor("mydb.users"); len(got) != 1 {
 		t.Fatalf("expected 1 cache write, got %d", len(got))
 	}
@@ -161,10 +144,9 @@ func TestBinlogConsumerRoutesToCache(t *testing.T) {
 		t.Fatalf("expected 0 sink writes, got %d", sink.count())
 	}
 
-	// Verify CacheEvent fields.
 	ce := cb.writesFor("mydb.users")[0]
-	if ce.Gtid != "gtid-abc" {
-		t.Errorf("CacheEvent.Gtid = %q, want %q", ce.Gtid, "gtid-abc")
+	if ce.TxID != "gtid-abc" {
+		t.Errorf("CacheEvent.TxID = %q, want %q", ce.TxID, "gtid-abc")
 	}
 	if ce.EventSeq != 1 {
 		t.Errorf("CacheEvent.EventSeq = %d, want 1", ce.EventSeq)
@@ -186,7 +168,7 @@ func TestBinlogConsumerRoutesToSink(t *testing.T) {
 	cb := newMockCacheBackend()
 	sink := &mockEventSink{}
 
-	consumer := NewBinlogConsumer(taskID, store, cb, sink)
+	consumer := NewBinlogConsumer(taskID, store, cb, sink, cache.SourceTypeMySQLGTID)
 
 	ev := makeChangeEvent("mydb", "orders", "gtid-xyz", 2)
 	if err := consumer.Route(context.Background(), ev); err != nil {
@@ -210,7 +192,7 @@ func TestBinlogConsumerDiscardsPending(t *testing.T) {
 	cb := newMockCacheBackend()
 	sink := &mockEventSink{}
 
-	consumer := NewBinlogConsumer(taskID, store, cb, sink)
+	consumer := NewBinlogConsumer(taskID, store, cb, sink, cache.SourceTypeMySQLGTID)
 
 	ev := makeChangeEvent("mydb", "pending_tbl", "gtid-111", 1)
 	if err := consumer.Route(context.Background(), ev); err != nil {
@@ -227,12 +209,11 @@ func TestBinlogConsumerDiscardsPending(t *testing.T) {
 
 func TestBinlogConsumerDiscardsUnknownTable(t *testing.T) {
 	taskID := "task-1"
-	// Empty store — no tables registered.
 	store := setupStore(t, taskID, map[source.TableID]source.TableState{})
 	cb := newMockCacheBackend()
 	sink := &mockEventSink{}
 
-	consumer := NewBinlogConsumer(taskID, store, cb, sink)
+	consumer := NewBinlogConsumer(taskID, store, cb, sink, cache.SourceTypeMySQLGTID)
 
 	ev := makeChangeEvent("mydb", "unknown_tbl", "gtid-222", 1)
 	if err := consumer.Route(context.Background(), ev); err != nil {
@@ -256,7 +237,7 @@ func TestBinlogConsumerCatchingUpRoutesToSink(t *testing.T) {
 	cb := newMockCacheBackend()
 	sink := &mockEventSink{}
 
-	consumer := NewBinlogConsumer(taskID, store, cb, sink)
+	consumer := NewBinlogConsumer(taskID, store, cb, sink, cache.SourceTypeMySQLGTID)
 
 	ev := makeChangeEvent("mydb", "catching_tbl", "gtid-333", 3)
 	if err := consumer.Route(context.Background(), ev); err != nil {

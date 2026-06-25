@@ -57,11 +57,8 @@ func NewCatchingUpReplayer(cacheBackend cache.BinlogCacheBackend, sink EventSink
 // Returns a ReplayResult indicating progress. CaughtUp is true if the channel
 // was fully consumed (all cached events applied). If the context is cancelled
 // mid-replay, CaughtUp is false.
-func (r *CatchingUpReplayer) Replay(ctx context.Context, tableID string, fromGTID string, fromEventSeq int64) (*ReplayResult, error) {
-	ch, err := r.cache.Read(ctx, tableID, fromGTID, fromEventSeq)
-	if err != nil {
-		return nil, err
-	}
+func (r *CatchingUpReplayer) Replay(ctx context.Context, tableID string, fromTxID string, fromEventSeq int64) (*ReplayResult, error) {
+	rr := r.cache.Read(ctx, tableID, fromTxID, fromEventSeq)
 
 	upsertUntil := time.Now().Add(r.config.UpsertDuration)
 
@@ -72,19 +69,21 @@ func (r *CatchingUpReplayer) Replay(ctx context.Context, tableID string, fromGTI
 		case <-ctx.Done():
 			result.CaughtUp = false
 			return result, ctx.Err()
-		case ev, ok := <-ch:
+		case err, ok := <-rr.Err:
+			if ok && err != nil {
+				return result, err
+			}
+		case ev, ok := <-rr.Events:
 			if !ok {
-				// Channel closed — all events consumed.
 				result.CaughtUp = true
 				return result, nil
 			}
 
-			changeEvent, err := deserializePayload(ev.GetPayload())
+			changeEvent, err := deserializePayload(ev.Payload)
 			if err != nil {
 				return result, err
 			}
 
-			// Apply UPSERT mode if within the upsert window.
 			if time.Now().Before(upsertUntil) {
 				if changeEvent.Metadata == nil {
 					changeEvent.Metadata = make(map[string]string)
@@ -96,8 +95,8 @@ func (r *CatchingUpReplayer) Replay(ctx context.Context, tableID string, fromGTI
 				return result, err
 			}
 
-			result.LastGTID = ev.GetGtid()
-			result.LastEventSeq = ev.GetEventSeq()
+			result.LastGTID = ev.TxID
+			result.LastEventSeq = ev.EventSeq
 			result.EventsApplied++
 		}
 	}

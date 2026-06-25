@@ -91,13 +91,13 @@ func TestLifecyclePipelineStartStop(t *testing.T) {
 	snk := newMockLifecycleSink()
 	store := source.NewMemoryLifecycleStore()
 	dir := t.TempDir()
-	cacheBackend, err := cache.NewLocalBackend(dir)
+	cacheBackend, err := cache.NewLocalBackend(dir, cache.SyncModeNone)
 	require.NoError(t, err)
 	defer cacheBackend.Close()
 
 	scheduler := NewSnapshotScheduler(DefaultSchedulerConfig(), "task-1", store, cacheBackend)
 
-	pipeline := NewLifecyclePipeline(src, []sink.Connector{snk}, scheduler, cacheBackend, store, "task-1")
+	pipeline := NewLifecyclePipeline(src, []sink.Connector{snk}, scheduler, cacheBackend, store, "task-1", cache.SourceTypeMySQLGTID)
 
 	ctx := context.Background()
 	require.NoError(t, pipeline.Start(ctx))
@@ -112,7 +112,7 @@ func TestLifecyclePipelineRoutesEvents(t *testing.T) {
 	snk := newMockLifecycleSink()
 	store := source.NewMemoryLifecycleStore()
 	dir := t.TempDir()
-	cacheBackend, err := cache.NewLocalBackend(dir)
+	cacheBackend, err := cache.NewLocalBackend(dir, cache.SyncModeNone)
 	require.NoError(t, err)
 	defer cacheBackend.Close()
 
@@ -120,16 +120,16 @@ func TestLifecyclePipelineRoutesEvents(t *testing.T) {
 
 	// Add table and transition to streaming state.
 	tid := source.TableID{Database: "db1", Table: "users"}
-	require.NoError(t, scheduler.AddTable(tid, &event.Position{GTID: "uuid:1", CommitTime: time.Now()}))
+	require.NoError(t, scheduler.AddTable(tid, &event.Position{TxID: "uuid:1", CommitTime: time.Now()}))
 
 	lc, err := store.Get(context.Background(), "task-1", tid)
 	require.NoError(t, err)
-	require.NoError(t, lc.TransitionTo(source.TableStateSnapshotting, &event.Position{GTID: "uuid:1"}))
+	require.NoError(t, lc.TransitionTo(source.TableStateSnapshotting, &event.Position{TxID: "uuid:1"}))
 	require.NoError(t, lc.TransitionTo(source.TableStateCatchingUp, nil))
 	require.NoError(t, lc.TransitionTo(source.TableStateStreaming, nil))
 	require.NoError(t, store.Save(context.Background(), "task-1", lc))
 
-	pipeline := NewLifecyclePipeline(src, []sink.Connector{snk}, scheduler, cacheBackend, store, "task-1")
+	pipeline := NewLifecyclePipeline(src, []sink.Connector{snk}, scheduler, cacheBackend, store, "task-1", cache.SourceTypeMySQLGTID)
 
 	ctx := context.Background()
 	require.NoError(t, pipeline.Start(ctx))

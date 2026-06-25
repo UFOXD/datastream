@@ -17,7 +17,7 @@ func newTestScheduler(t *testing.T) *SnapshotScheduler {
 	t.Helper()
 	store := source.NewMemoryLifecycleStore()
 	dir := t.TempDir()
-	cacheBackend, err := cache.NewLocalBackend(dir)
+	cacheBackend, err := cache.NewLocalBackend(dir, cache.SyncModeNone)
 	require.NoError(t, err)
 	t.Cleanup(func() { cacheBackend.Close() })
 	return NewSnapshotScheduler(DefaultSchedulerConfig(), "task-1", store, cacheBackend)
@@ -27,13 +27,13 @@ func TestSchedulerAddTable(t *testing.T) {
 	s := newTestScheduler(t)
 	ctx := context.Background()
 
-	err := s.AddTable(source.TableID{Database: "db1", Table: "users"}, &event.Position{GTID: "uuid:100"})
+	err := s.AddTable(source.TableID{Database: "db1", Table: "users"}, &event.Position{TxID: "uuid:100"})
 	require.NoError(t, err)
 
 	lc, err := s.store.Get(ctx, s.taskID, source.TableID{Database: "db1", Table: "users"})
 	require.NoError(t, err)
 	assert.Equal(t, source.TableStatePending, lc.GetState())
-	assert.Equal(t, "uuid:100", lc.SnapshotPosition.GTID)
+	assert.Equal(t, "uuid:100", lc.SnapshotPosition.TxID)
 }
 
 func TestSchedulerFullLifecycle(t *testing.T) {
@@ -41,13 +41,13 @@ func TestSchedulerFullLifecycle(t *testing.T) {
 	ctx := context.Background()
 	tid := source.TableID{Database: "db1", Table: "users"}
 
-	err := s.AddTable(tid, &event.Position{GTID: "uuid:100"})
+	err := s.AddTable(tid, &event.Position{TxID: "uuid:100"})
 	require.NoError(t, err)
 
 	// Start snapshot (manual transition for test)
 	lc, err := s.store.Get(ctx, s.taskID, tid)
 	require.NoError(t, err)
-	err = lc.TransitionTo(source.TableStateSnapshotting, &event.Position{GTID: "uuid:100"})
+	err = lc.TransitionTo(source.TableStateSnapshotting, &event.Position{TxID: "uuid:100"})
 	require.NoError(t, err)
 	err = s.store.Save(ctx, s.taskID, lc)
 	require.NoError(t, err)
@@ -72,12 +72,12 @@ func TestSchedulerSnapshotError(t *testing.T) {
 	ctx := context.Background()
 	tid := source.TableID{Database: "db1", Table: "users"}
 
-	err := s.AddTable(tid, &event.Position{GTID: "uuid:100"})
+	err := s.AddTable(tid, &event.Position{TxID: "uuid:100"})
 	require.NoError(t, err)
 
 	lc, err := s.store.Get(ctx, s.taskID, tid)
 	require.NoError(t, err)
-	err = lc.TransitionTo(source.TableStateSnapshotting, &event.Position{GTID: "uuid:100"})
+	err = lc.TransitionTo(source.TableStateSnapshotting, &event.Position{TxID: "uuid:100"})
 	require.NoError(t, err)
 	err = s.store.Save(ctx, s.taskID, lc)
 	require.NoError(t, err)
@@ -96,24 +96,24 @@ func TestSchedulerRestartTable(t *testing.T) {
 	ctx := context.Background()
 	tid := source.TableID{Database: "db1", Table: "users"}
 
-	err := s.AddTable(tid, &event.Position{GTID: "uuid:100"})
+	err := s.AddTable(tid, &event.Position{TxID: "uuid:100"})
 	require.NoError(t, err)
 
 	lc, err := s.store.Get(ctx, s.taskID, tid)
 	require.NoError(t, err)
-	err = lc.TransitionTo(source.TableStateSnapshotting, &event.Position{GTID: "uuid:100"})
+	err = lc.TransitionTo(source.TableStateSnapshotting, &event.Position{TxID: "uuid:100"})
 	require.NoError(t, err)
 	lc.SetError("fail")
 	err = s.store.Save(ctx, s.taskID, lc)
 	require.NoError(t, err)
 
-	err = s.RestartTable(tid, &event.Position{GTID: "uuid:200"}, false)
+	err = s.RestartTable(tid, &event.Position{TxID: "uuid:200"}, false)
 	require.NoError(t, err)
 
 	lc, err = s.store.Get(ctx, s.taskID, tid)
 	require.NoError(t, err)
 	assert.Equal(t, source.TableStatePending, lc.GetState())
-	assert.Equal(t, "uuid:200", lc.SnapshotPosition.GTID)
+	assert.Equal(t, "uuid:200", lc.SnapshotPosition.TxID)
 }
 
 func TestSchedulerRestartStreamingRequiresForce(t *testing.T) {
@@ -121,12 +121,12 @@ func TestSchedulerRestartStreamingRequiresForce(t *testing.T) {
 	ctx := context.Background()
 	tid := source.TableID{Database: "db1", Table: "users"}
 
-	err := s.AddTable(tid, &event.Position{GTID: "uuid:100"})
+	err := s.AddTable(tid, &event.Position{TxID: "uuid:100"})
 	require.NoError(t, err)
 
 	lc, err := s.store.Get(ctx, s.taskID, tid)
 	require.NoError(t, err)
-	err = lc.TransitionTo(source.TableStateSnapshotting, &event.Position{GTID: "uuid:100"})
+	err = lc.TransitionTo(source.TableStateSnapshotting, &event.Position{TxID: "uuid:100"})
 	require.NoError(t, err)
 	err = lc.TransitionTo(source.TableStateCatchingUp, nil)
 	require.NoError(t, err)
@@ -136,30 +136,30 @@ func TestSchedulerRestartStreamingRequiresForce(t *testing.T) {
 	require.NoError(t, err)
 
 	// Without force → error
-	err = s.RestartTable(tid, &event.Position{GTID: "uuid:200"}, false)
+	err = s.RestartTable(tid, &event.Position{TxID: "uuid:200"}, false)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "streaming")
 	assert.Contains(t, err.Error(), "force=true")
 
 	// With force → ok
-	err = s.RestartTable(tid, &event.Position{GTID: "uuid:200"}, true)
+	err = s.RestartTable(tid, &event.Position{TxID: "uuid:200"}, true)
 	assert.NoError(t, err)
 
 	lc, err = s.store.Get(ctx, s.taskID, tid)
 	require.NoError(t, err)
 	assert.Equal(t, source.TableStatePending, lc.GetState())
-	assert.Equal(t, "uuid:200", lc.SnapshotPosition.GTID)
+	assert.Equal(t, "uuid:200", lc.SnapshotPosition.TxID)
 }
 
 func TestSchedulerRestartSchema(t *testing.T) {
 	s := newTestScheduler(t)
 	ctx := context.Background()
 
-	err := s.AddTable(source.TableID{Database: "db1", Table: "t1"}, &event.Position{GTID: "uuid:100"})
+	err := s.AddTable(source.TableID{Database: "db1", Table: "t1"}, &event.Position{TxID: "uuid:100"})
 	require.NoError(t, err)
-	err = s.AddTable(source.TableID{Database: "db1", Table: "t2"}, &event.Position{GTID: "uuid:100"})
+	err = s.AddTable(source.TableID{Database: "db1", Table: "t2"}, &event.Position{TxID: "uuid:100"})
 	require.NoError(t, err)
-	err = s.AddTable(source.TableID{Database: "db2", Table: "t3"}, &event.Position{GTID: "uuid:100"})
+	err = s.AddTable(source.TableID{Database: "db2", Table: "t3"}, &event.Position{TxID: "uuid:100"})
 	require.NoError(t, err)
 
 	// Put db1 tables in error state
@@ -167,14 +167,14 @@ func TestSchedulerRestartSchema(t *testing.T) {
 		tid := source.TableID{Database: "db1", Table: tbl}
 		lc, err := s.store.Get(ctx, s.taskID, tid)
 		require.NoError(t, err)
-		err = lc.TransitionTo(source.TableStateSnapshotting, &event.Position{GTID: "uuid:100"})
+		err = lc.TransitionTo(source.TableStateSnapshotting, &event.Position{TxID: "uuid:100"})
 		require.NoError(t, err)
 		lc.SetError("fail")
 		err = s.store.Save(ctx, s.taskID, lc)
 		require.NoError(t, err)
 	}
 
-	restarted, err := s.RestartSchema("db1", &event.Position{GTID: "uuid:300"}, false)
+	restarted, err := s.RestartSchema("db1", &event.Position{TxID: "uuid:300"}, false)
 	require.NoError(t, err)
 	assert.Len(t, restarted, 2)
 
@@ -184,14 +184,14 @@ func TestSchedulerRestartSchema(t *testing.T) {
 		lc, err := s.store.Get(ctx, s.taskID, tid)
 		require.NoError(t, err)
 		assert.Equal(t, source.TableStatePending, lc.GetState())
-		assert.Equal(t, "uuid:300", lc.SnapshotPosition.GTID)
+		assert.Equal(t, "uuid:300", lc.SnapshotPosition.TxID)
 	}
 
 	// db2 table should be unaffected
 	lc, err := s.store.Get(ctx, s.taskID, source.TableID{Database: "db2", Table: "t3"})
 	require.NoError(t, err)
 	assert.Equal(t, source.TableStatePending, lc.GetState())
-	assert.Equal(t, "uuid:100", lc.SnapshotPosition.GTID)
+	assert.Equal(t, "uuid:100", lc.SnapshotPosition.TxID)
 }
 
 func TestSchedulerGlobalMinPosition(t *testing.T) {
@@ -201,25 +201,25 @@ func TestSchedulerGlobalMinPosition(t *testing.T) {
 	tid1 := source.TableID{Database: "db1", Table: "t1"}
 	tid2 := source.TableID{Database: "db1", Table: "t2"}
 
-	err := s.AddTable(tid1, &event.Position{GTID: "uuid:100", CommitTime: time.Unix(100, 0)})
+	err := s.AddTable(tid1, &event.Position{TxID: "uuid:100", CommitTime: time.Unix(100, 0)})
 	require.NoError(t, err)
-	err = s.AddTable(tid2, &event.Position{GTID: "uuid:200", CommitTime: time.Unix(200, 0)})
+	err = s.AddTable(tid2, &event.Position{TxID: "uuid:200", CommitTime: time.Unix(200, 0)})
 	require.NoError(t, err)
 
 	lc1, err := s.store.Get(ctx, s.taskID, tid1)
 	require.NoError(t, err)
-	err = lc1.TransitionTo(source.TableStateSnapshotting, &event.Position{GTID: "uuid:100", CommitTime: time.Unix(100, 0)})
+	err = lc1.TransitionTo(source.TableStateSnapshotting, &event.Position{TxID: "uuid:100", CommitTime: time.Unix(100, 0)})
 	require.NoError(t, err)
 	err = s.store.Save(ctx, s.taskID, lc1)
 	require.NoError(t, err)
 
 	lc2, err := s.store.Get(ctx, s.taskID, tid2)
 	require.NoError(t, err)
-	err = lc2.TransitionTo(source.TableStateSnapshotting, &event.Position{GTID: "uuid:200", CommitTime: time.Unix(200, 0)})
+	err = lc2.TransitionTo(source.TableStateSnapshotting, &event.Position{TxID: "uuid:200", CommitTime: time.Unix(200, 0)})
 	require.NoError(t, err)
 	err = lc2.TransitionTo(source.TableStateCatchingUp, nil)
 	require.NoError(t, err)
-	lc2.UpdateStreamPosition(&event.Position{GTID: "uuid:500", CommitTime: time.Unix(500, 0)})
+	lc2.UpdateStreamPosition(&event.Position{TxID: "uuid:500", CommitTime: time.Unix(500, 0)})
 	err = s.store.Save(ctx, s.taskID, lc2)
 	require.NoError(t, err)
 
@@ -235,9 +235,9 @@ func TestSchedulerListErrors(t *testing.T) {
 	tid1 := source.TableID{Database: "db1", Table: "t1"}
 	tid2 := source.TableID{Database: "db1", Table: "t2"}
 
-	err := s.AddTable(tid1, &event.Position{GTID: "uuid:100"})
+	err := s.AddTable(tid1, &event.Position{TxID: "uuid:100"})
 	require.NoError(t, err)
-	err = s.AddTable(tid2, &event.Position{GTID: "uuid:200"})
+	err = s.AddTable(tid2, &event.Position{TxID: "uuid:200"})
 	require.NoError(t, err)
 
 	// Put t1 in error state
@@ -258,13 +258,13 @@ func TestSchedulerPauseResume(t *testing.T) {
 	ctx := context.Background()
 	tid := source.TableID{Database: "db1", Table: "users"}
 
-	err := s.AddTable(tid, &event.Position{GTID: "uuid:100"})
+	err := s.AddTable(tid, &event.Position{TxID: "uuid:100"})
 	require.NoError(t, err)
 
 	// Transition to streaming
 	lc, err := s.store.Get(ctx, s.taskID, tid)
 	require.NoError(t, err)
-	err = lc.TransitionTo(source.TableStateSnapshotting, &event.Position{GTID: "uuid:100"})
+	err = lc.TransitionTo(source.TableStateSnapshotting, &event.Position{TxID: "uuid:100"})
 	require.NoError(t, err)
 	err = lc.TransitionTo(source.TableStateCatchingUp, nil)
 	require.NoError(t, err)
