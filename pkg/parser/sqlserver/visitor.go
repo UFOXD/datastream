@@ -1,6 +1,7 @@
 package sqlserver
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/UFOXD/datastream/pkg/parser"
@@ -117,12 +118,27 @@ func (v *DDLVisitor) VisitCreate_table(ctx *generated.Create_tableContext) inter
 		result.Table = table
 	}
 
+	tableInfo := &parser.TableInfo{
+		Database: result.Database,
+		Name:     result.Table,
+	}
+
+	// Extract column definitions from Column_def_table_constraints
+	if colDefs := ctx.Column_def_table_constraints(); colDefs != nil {
+		for _, cdtc := range colDefs.AllColumn_def_table_constraint() {
+			constraintCtx := cdtc.(*generated.Column_def_table_constraintContext)
+			if colDef := constraintCtx.Column_definition(); colDef != nil {
+				col := extractColumnInfoFromDef(colDef.(*generated.Column_definitionContext))
+				if col != nil {
+					tableInfo.Columns = append(tableInfo.Columns, *col)
+				}
+			}
+		}
+	}
+
 	result.TableChanges = &parser.TableChanges{
 		Operation: parser.TableOpCreate,
-		Table: &parser.TableInfo{
-			Database: result.Database,
-			Name:     result.Table,
-		},
+		Table:     tableInfo,
 	}
 
 	return result
@@ -149,27 +165,21 @@ func (v *DDLVisitor) VisitAlter_table(ctx *generated.Alter_tableContext) interfa
 		}
 	}
 
-	// Use ANTLR context methods to detect ALTER actions
 	// ADD COLUMN - check if ADD keyword exists
 	if ctx.ADD() != nil {
-		// Get column name from Id_ or Column_def_table_constraints
 		if colDefs := ctx.Column_def_table_constraints(); colDefs != nil {
-			// Extract column name from column definition
-			colName := extractColumnFromDef(colDefs.GetText())
-			if colName != "" {
-				col := &parser.ColumnInfo{
-					Name:     colName,
-					Nullable: true,
+			for _, cdtc := range colDefs.AllColumn_def_table_constraint() {
+				constraintCtx := cdtc.(*generated.Column_def_table_constraintContext)
+				if colDef := constraintCtx.Column_definition(); colDef != nil {
+					col := extractColumnInfoFromDef(colDef.(*generated.Column_definitionContext))
+					if col != nil {
+						result.TableChanges.AddedColumns = append(result.TableChanges.AddedColumns, *col)
+					}
 				}
-				result.TableChanges.AddedColumns = append(result.TableChanges.AddedColumns, *col)
 			}
 		} else if ctx.Column_definition() != nil {
-			colName := extractColumnFromDef(ctx.Column_definition().GetText())
-			if colName != "" {
-				col := &parser.ColumnInfo{
-					Name:     colName,
-					Nullable: true,
-				}
+			col := extractColumnInfoFromDef(ctx.Column_definition().(*generated.Column_definitionContext))
+			if col != nil {
 				result.TableChanges.AddedColumns = append(result.TableChanges.AddedColumns, *col)
 			}
 		}
@@ -177,10 +187,23 @@ func (v *DDLVisitor) VisitAlter_table(ctx *generated.Alter_tableContext) interfa
 
 	// DROP COLUMN - check if DROP keyword exists with COLUMN keyword
 	if ctx.DROP() != nil && ctx.COLUMN() != nil {
-		// Get column name from Id_ (column name to drop)
 		if colId := ctx.Id_(0); colId != nil {
 			colName := strings.Trim(colId.GetText(), "[]\"")
 			result.TableChanges.DroppedColumns = append(result.TableChanges.DroppedColumns, colName)
+		}
+	}
+
+	// ALTER COLUMN - check if ALTER keyword exists with COLUMN keyword
+	// When ALTER TABLE ... ALTER COLUMN col TYPE, Column_definition() is set but ADD() is nil
+	if ctx.ADD() == nil && ctx.DROP() == nil && ctx.Column_definition() != nil {
+		colDef := ctx.Column_definition().(*generated.Column_definitionContext)
+		col := extractColumnInfoFromDef(colDef)
+		if col != nil {
+			mod := parser.ColumnModification{
+				Old: parser.ColumnInfo{Name: col.Name},
+				New: *col,
+			}
+			result.TableChanges.ModifiedColumns = append(result.TableChanges.ModifiedColumns, mod)
 		}
 	}
 
@@ -442,4 +465,123 @@ func extractColumnFromDef(text string) string {
 		return parts[0]
 	}
 	return ""
+}
+
+// extractColumnInfoFromDef extracts column info from a Column_definitionContext.
+func extractColumnInfoFromDef(ctx *generated.Column_definitionContext) *parser.ColumnInfo {
+	if ctx == nil {
+		return nil
+	}
+
+	col := &parser.ColumnInfo{
+		Nullable: true, // default nullable
+	}
+
+	// Extract column name
+	if id := ctx.Id_(); id != nil {
+		col.Name = strings.Trim(id.GetText(), "[]\"")
+	}
+
+	// Extract data type using labeled fields from grammar
+	if dataType := ctx.Data_type(); dataType != nil {
+		col.Type = extractDataTypeString(dataType.(*generated.Data_typeContext))
+	}
+
+	// Check for NULL/NOT NULL constraints and PRIMARY KEY in column_definition_element
+	for _, elem := range ctx.AllColumn_definition_element() {
+		elemCtx := elem.(*generated.Column_definition_elementContext)
+		if colConstraint := elemCtx.Column_constraint(); colConstraint != nil {
+			constraintCtx := colConstraint.(*generated.Column_constraintContext)
+			// Check for NULL/NOT NULL
+			if nullNotNull := constraintCtx.Null_notnull(); nullNotNull != nil {
+				nnCtx := nullNotNull.(*generated.Null_notnullContext)
+				if nnCtx.NOT() != nil {
+					col.Nullable = false
+				}
+			}
+			// PRIMARY KEY columns are NOT NULL by default
+			if constraintCtx.PRIMARY() != nil && constraintCtx.KEY() != nil {
+				col.Nullable = false
+			}
+		}
+	}
+
+	if col.Name == "" {
+		return nil
+	}
+	return col
+}
+
+// extractDataTypeString constructs the full type string from a Data_typeContext.
+// Grammar alternatives:
+//   - scaled = (VARCHAR|NVARCHAR|...) '(' MAX ')'
+//   - ext_type = id_ '(' scale = DECIMAL ',' prec = DECIMAL ')'
+//   - ext_type = id_ '(' scale = DECIMAL ')'
+//   - ext_type = id_ IDENTITY ...
+//   - double_prec = DOUBLE PRECISION?
+//   - unscaled_type = id_
+func extractDataTypeString(ctx *generated.Data_typeContext) string {
+	// VARCHAR(MAX), NVARCHAR(MAX), etc.
+	if ctx.GetScaled() != nil {
+		return strings.ToUpper(ctx.GetScaled().GetText()) + "(MAX)"
+	}
+	// DECIMAL(10,2), NUMERIC(10,2)
+	if ctx.GetExt_type() != nil && ctx.GetPrec() != nil && ctx.GetScale() != nil {
+		return strings.ToUpper(ctx.GetExt_type().GetText()) +
+			"(" + ctx.GetScale().GetText() + "," + ctx.GetPrec().GetText() + ")"
+	}
+	// NVARCHAR(100), VARCHAR(50)
+	if ctx.GetExt_type() != nil && ctx.GetScale() != nil {
+		return strings.ToUpper(ctx.GetExt_type().GetText()) +
+			"(" + ctx.GetScale().GetText() + ")"
+	}
+	// IDENTITY types
+	if ctx.GetExt_type() != nil && ctx.IDENTITY() != nil {
+		base := strings.ToUpper(ctx.GetExt_type().GetText()) + " IDENTITY"
+		if ctx.GetSeed() != nil && ctx.GetInc() != nil {
+			base += "(" + ctx.GetSeed().GetText() + "," + ctx.GetInc().GetText() + ")"
+		}
+		return base
+	}
+	// DOUBLE PRECISION
+	if ctx.GetDouble_prec() != nil {
+		return "DOUBLE PRECISION"
+	}
+	// Simple types: INT, BIGINT, etc.
+	if ctx.GetUnscaled_type() != nil {
+		return strings.ToUpper(ctx.GetUnscaled_type().GetText())
+	}
+	// Fallback
+	return strings.ToUpper(ctx.GetText())
+}
+
+// parseTypeString parses a SQL Server type string like "NVARCHAR(255)" or "DECIMAL(10,2)"
+// into base type, length, and scale.
+func parseTypeString(typeStr string) (baseType string, length, scale int) {
+	if typeStr == "" {
+		return "", 0, 0
+	}
+
+	idx := strings.Index(typeStr, "(")
+	if idx == -1 {
+		return strings.ToUpper(typeStr), 0, 0
+	}
+
+	baseType = strings.ToUpper(typeStr[:idx])
+	params := strings.TrimSuffix(typeStr[idx+1:], ")")
+	parts := strings.SplitN(params, ",", 2)
+
+	if len(parts) >= 1 {
+		p := strings.TrimSpace(parts[0])
+		if p == "MAX" {
+			length = -1 // -1 indicates MAX
+		} else {
+			fmt.Sscanf(p, "%d", &length)
+		}
+	}
+	if len(parts) >= 2 {
+		fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &scale)
+	}
+
+	return baseType, length, scale
 }
