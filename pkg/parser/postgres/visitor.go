@@ -10,7 +10,8 @@ import (
 // DDLVisitor traverses the PostgreSQL parse tree and extracts DDL information.
 type DDLVisitor struct {
 	*generated.BasePostgreSQLParserVisitor
-	ddl string
+	ddl        string // original DDL text with proper spacing
+	ddlRaw     string // ANTLR-concatenated text
 }
 
 // NewDDLVisitor creates a new DDL visitor.
@@ -22,7 +23,7 @@ func NewDDLVisitor() *DDLVisitor {
 
 // VisitRoot visits the root node.
 func (v *DDLVisitor) VisitRoot(ctx *generated.RootContext) interface{} {
-	v.ddl = ctx.GetText()
+	v.ddlRaw = ctx.GetText()
 	results := &parser.DDLResults{}
 
 	if stmtblock := ctx.Stmtblock(); stmtblock != nil {
@@ -98,6 +99,11 @@ func (v *DDLVisitor) VisitStmt(ctx *generated.StmtContext) interface{} {
 	// ALTER TABLE
 	if alterTable := ctx.Altertablestmt(); alterTable != nil {
 		return v.VisitAltertablestmt(alterTable.(*generated.AltertablestmtContext))
+	}
+
+	// RENAME (ALTER TABLE ... RENAME COLUMN)
+	if renameStmt := ctx.Renamestmt(); renameStmt != nil {
+		return v.VisitRenamestmt(renameStmt.(*generated.RenamestmtContext))
 	}
 
 	// TRUNCATE
@@ -180,15 +186,177 @@ func (v *DDLVisitor) VisitCreatestmt(ctx *generated.CreatestmtContext) interface
 		result.Table = table
 	}
 
+	tableInfo := &parser.TableInfo{
+		Database: result.Database,
+		Name:     result.Table,
+	}
+
+	// Extract column definitions from Opttableelementlist
+	if optTableElemList := ctx.Opttableelementlist(); optTableElemList != nil {
+		v.extractTableColumns(optTableElemList.(*generated.OpttableelementlistContext), tableInfo)
+	}
+
 	result.TableChanges = &parser.TableChanges{
 		Operation: parser.TableOpCreate,
-		Table: &parser.TableInfo{
-			Database: result.Database,
-			Name:     result.Table,
-		},
+		Table:     tableInfo,
 	}
 
 	return result
+}
+
+// extractTableColumns extracts column definitions from CREATE TABLE element list.
+func (v *DDLVisitor) extractTableColumns(ctx *generated.OpttableelementlistContext, tableInfo *parser.TableInfo) {
+	tableElemList := ctx.Tableelementlist()
+	if tableElemList == nil {
+		return
+	}
+	elemListCtx := tableElemList.(*generated.TableelementlistContext)
+	for _, elem := range elemListCtx.AllTableelement() {
+		elemCtx := elem.(*generated.TableelementContext)
+		if colDef := elemCtx.ColumnDef(); colDef != nil {
+			col := v.extractColumnFromDef(colDef.(*generated.ColumnDefContext))
+			if col != nil {
+				tableInfo.Columns = append(tableInfo.Columns, *col)
+			}
+		}
+	}
+}
+
+// extractColumnFromDef extracts column info from a ColumnDef context.
+// Uses the raw DDL text for reliable type extraction since ANTLR's GetText()
+// concatenates tokens without spaces, losing type modifiers like (100).
+func (v *DDLVisitor) extractColumnFromDef(ctx *generated.ColumnDefContext) *parser.ColumnInfo {
+	col := &parser.ColumnInfo{
+		Nullable: true, // PostgreSQL columns are nullable by default
+	}
+
+	// Get column name from ANTLR context
+	if colId := ctx.Colid(); colId != nil {
+		col.Name = strings.Trim(colId.GetText(), "\"")
+	}
+
+	// Get column type from raw DDL text by finding the column definition
+	col.Type = v.extractColumnTypeFromDDL(col.Name)
+
+	// Check column constraints for NOT NULL, DEFAULT, PRIMARY KEY
+	if colQualList := ctx.Colquallist(); colQualList != nil {
+		v.applyColumnConstraints(colQualList.(*generated.ColquallistContext), col)
+	}
+
+	return col
+}
+
+// extractColumnTypeFromDDL extracts the column type from the original DDL string
+// by finding the column name and parsing the type that follows it.
+func (v *DDLVisitor) extractColumnTypeFromDDL(colName string) string {
+	// Find the column name in the DDL (case-insensitive)
+	upper := strings.ToUpper(v.ddl)
+	nameUpper := strings.ToUpper(colName)
+
+	// Look for "colName " pattern (column name followed by space)
+	searchStr := nameUpper + " "
+	idx := strings.Index(upper, searchStr)
+	if idx == -1 {
+		return ""
+	}
+
+	// Extract text after the column name
+	rest := v.ddl[idx+len(searchStr):]
+	rest = strings.TrimSpace(rest)
+
+	// Parse the type: read tokens until we hit a constraint keyword or end
+	// Constraints start with: NOT, NULL, PRIMARY, UNIQUE, DEFAULT, CHECK, REFERENCES, CONSTRAINT
+	constraintKeywords := []string{"NOT", "NULL", "PRIMARY", "UNIQUE", "DEFAULT", "CHECK", "REFERENCES", "CONSTRAINT", "COLLATE"}
+
+	// Handle parenthesized type modifiers like VARCHAR(255) or NUMERIC(10,2)
+	var typeStr strings.Builder
+	parenDepth := 0
+	i := 0
+
+	for i < len(rest) {
+		ch := rest[i]
+
+		if ch == '(' {
+			parenDepth++
+			typeStr.WriteByte(ch)
+			i++
+			continue
+		}
+		if ch == ')' {
+			parenDepth--
+			typeStr.WriteByte(ch)
+			i++
+			continue
+		}
+
+		if parenDepth > 0 {
+			typeStr.WriteByte(ch)
+			i++
+			continue
+		}
+
+		// At top level, check for space-separated tokens
+		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+			// Check if next token is a constraint keyword
+			remaining := strings.TrimSpace(rest[i:])
+			remainingUpper := strings.ToUpper(remaining)
+			isConstraint := false
+			for _, kw := range constraintKeywords {
+				if strings.HasPrefix(remainingUpper, kw) {
+					isConstraint = true
+					break
+				}
+			}
+			if isConstraint {
+				break
+			}
+			// Could be a compound type like "DOUBLE PRECISION" or "CHARACTER VARYING"
+			// Check if the next word is part of the type
+			nextWord := strings.Fields(remaining)
+			if len(nextWord) > 0 {
+				nextUpper := strings.ToUpper(nextWord[0])
+				partOfType := false
+				switch nextUpper {
+				case "PRECISION", "VARYING", "WITHOUT", "WITH", "ZONE", "TIME":
+					partOfType = true
+				}
+				if partOfType {
+					typeStr.WriteByte(ch)
+					i++
+					continue
+				}
+			}
+			break
+		}
+
+		// Stop at comma (column separator in CREATE TABLE)
+		if ch == ',' {
+			break
+		}
+
+		typeStr.WriteByte(ch)
+		i++
+	}
+
+	return strings.TrimSpace(typeStr.String())
+}
+
+// applyColumnConstraints applies column constraints (NOT NULL, DEFAULT, PRIMARY KEY).
+func (v *DDLVisitor) applyColumnConstraints(ctx *generated.ColquallistContext, col *parser.ColumnInfo) {
+	for _, constraint := range ctx.AllColconstraint() {
+		constraintCtx := constraint.(*generated.ColconstraintContext)
+		if elem := constraintCtx.Colconstraintelem(); elem != nil {
+			elemCtx := elem.(*generated.ColconstraintelemContext)
+			// NOT NULL
+			if elemCtx.NOT() != nil && elemCtx.NULL_P() != nil {
+				col.Nullable = false
+			}
+			// PRIMARY KEY implies NOT NULL
+			if elemCtx.PRIMARY() != nil && elemCtx.KEY() != nil {
+				col.Nullable = false
+			}
+		}
+	}
 }
 
 // VisitDropstmt handles DROP statement.
@@ -382,51 +550,127 @@ func (v *DDLVisitor) processAlterCommands(ctx *generated.Alter_table_cmdsContext
 }
 
 func (v *DDLVisitor) processAlterCommand(ctx *generated.Alter_table_cmdContext, changes *parser.TableChanges) {
-	// ADD COLUMN - use ANTLR context methods
+	// ADD COLUMN
 	if ctx.ADD_P() != nil {
-		// Get column name from ColumnDef or Colid
 		if colDef := ctx.ColumnDef(); colDef != nil {
-			// ColumnDef contains the column definition, extract name from first Colid
-			colName := extractColumnDefName(colDef.GetText())
-			if colName != "" {
-				col := &parser.ColumnInfo{
-					Name:     colName,
-					Nullable: true,
-				}
+			col := v.extractColumnFromDef(colDef.(*generated.ColumnDefContext))
+			if col != nil {
 				changes.AddedColumns = append(changes.AddedColumns, *col)
 			}
-		} else if colId := ctx.Colid(0); colId != nil {
-			// Direct column name
-			colName := strings.Trim(colId.GetText(), "\"")
-			col := &parser.ColumnInfo{
-				Name:     colName,
-				Nullable: true,
-			}
-			changes.AddedColumns = append(changes.AddedColumns, *col)
 		}
+		return
 	}
 
-	// DROP COLUMN - use ANTLR context methods
-	if ctx.DROP() != nil && ctx.COLUMN() != nil {
+	// ALTER COLUMN (SET/DROP NOT NULL, SET/DROP DEFAULT, TYPE)
+	// Must check before DROP COLUMN since ALTER COLUMN ... DROP NOT NULL
+	// has both DROP and Column_ non-nil.
+	if ctx.ALTER() != nil && ctx.Column_() != nil {
+		v.processAlterColumn(ctx, changes)
+		return
+	}
+
+	// DROP COLUMN - COLUMN is under Column_() context, not a direct terminal
+	// Only match when ALTER is NOT present (to avoid matching ALTER COLUMN ... DROP NOT NULL)
+	if ctx.DROP() != nil && ctx.Column_() != nil && ctx.ALTER() == nil {
 		if colId := ctx.Colid(0); colId != nil {
 			colName := strings.Trim(colId.GetText(), "\"")
 			changes.DroppedColumns = append(changes.DroppedColumns, colName)
 		}
+		return
+	}
+}
+
+// processAlterColumn handles ALTER COLUMN sub-commands.
+func (v *DDLVisitor) processAlterColumn(ctx *generated.Alter_table_cmdContext, changes *parser.TableChanges) {
+	colId := ctx.Colid(0)
+	if colId == nil {
+		return
+	}
+	colName := strings.Trim(colId.GetText(), "\"")
+
+	mod := parser.ColumnModification{
+		Old: parser.ColumnInfo{Name: colName},
+		New: parser.ColumnInfo{Name: colName},
 	}
 
-	// ALTER COLUMN - use ANTLR context methods
-	if ctx.ALTER() != nil && ctx.COLUMN() != nil {
-		if colId := ctx.Colid(0); colId != nil {
-			colName := strings.Trim(colId.GetText(), "\"")
-			newCol := &parser.ColumnInfo{
-				Name: colName,
-			}
-			changes.ModifiedColumns = append(changes.ModifiedColumns, parser.ColumnModification{
-				Old: parser.ColumnInfo{Name: newCol.Name},
-				New: *newCol,
-			})
-		}
+	// ALTER COLUMN TYPE
+	if ctx.TYPE_P() != nil {
+		mod.New.Type = v.extractAlterColumnTypeFromDDL(colName)
+		changes.ModifiedColumns = append(changes.ModifiedColumns, mod)
+		return
 	}
+
+	// ALTER COLUMN SET NOT NULL / DROP NOT NULL
+	if ctx.SET() != nil && ctx.NOT() != nil && ctx.NULL_P() != nil {
+		mod.New.Nullable = false
+		changes.ModifiedColumns = append(changes.ModifiedColumns, mod)
+		return
+	}
+	if ctx.DROP() != nil && ctx.NOT() != nil && ctx.NULL_P() != nil {
+		mod.New.Nullable = true
+		changes.ModifiedColumns = append(changes.ModifiedColumns, mod)
+		return
+	}
+
+	// ALTER COLUMN SET DEFAULT / DROP DEFAULT
+	if alterDefault := ctx.Alter_column_default(); alterDefault != nil {
+		defaultCtx := alterDefault.(*generated.Alter_column_defaultContext)
+		if defaultCtx.SET() != nil && defaultCtx.DEFAULT() != nil {
+			// Extract default value expression
+			if aExpr := defaultCtx.A_expr(); aExpr != nil {
+				mod.New.DefaultValue = aExpr.GetText()
+			}
+		}
+		// DROP DEFAULT: leave DefaultValue as nil/zero
+		changes.ModifiedColumns = append(changes.ModifiedColumns, mod)
+		return
+	}
+
+	// Fallback: record as modification with no field changes (name-only)
+	changes.ModifiedColumns = append(changes.ModifiedColumns, mod)
+}
+
+// extractAlterColumnTypeFromDDL extracts the new type from ALTER COLUMN colname TYPE ...
+func (v *DDLVisitor) extractAlterColumnTypeFromDDL(colName string) string {
+	upper := strings.ToUpper(v.ddl)
+	nameUpper := strings.ToUpper(colName)
+
+	// Find "TYPE" after the column name
+	searchStr := nameUpper + " TYPE "
+	idx := strings.Index(upper, searchStr)
+	if idx == -1 {
+		return ""
+	}
+
+	rest := v.ddl[idx+len(searchStr):]
+	rest = strings.TrimSpace(rest)
+
+	// Parse the type (same logic as extractColumnTypeFromDDL)
+	var typeStr strings.Builder
+	parenDepth := 0
+	for i := 0; i < len(rest); i++ {
+		ch := rest[i]
+		if ch == '(' {
+			parenDepth++
+			typeStr.WriteByte(ch)
+			continue
+		}
+		if ch == ')' {
+			parenDepth--
+			typeStr.WriteByte(ch)
+			continue
+		}
+		if parenDepth > 0 {
+			typeStr.WriteByte(ch)
+			continue
+		}
+		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == ';' {
+			break
+		}
+		typeStr.WriteByte(ch)
+	}
+
+	return strings.TrimSpace(typeStr.String())
 }
 
 // extractColumnDefName extracts column name from column definition text
@@ -458,6 +702,49 @@ func (v *DDLVisitor) VisitTruncatestmt(ctx *generated.TruncatestmtContext) inter
 			result.Database = schema
 			result.Table = table
 		}
+	}
+
+	return result
+}
+
+// VisitRenamestmt handles RENAME statements including ALTER TABLE RENAME COLUMN.
+func (v *DDLVisitor) VisitRenamestmt(ctx *generated.RenamestmtContext) interface{} {
+	// Only handle TABLE RENAME COLUMN
+	if ctx.TABLE() == nil || ctx.Column_() == nil {
+		return &parser.DDLResult{
+			Type:      parser.DDLTypeUnknown,
+			Statement: v.ddl,
+		}
+	}
+
+	result := &parser.DDLResult{
+		Type:      parser.DDLTypeAlterTable,
+		Statement: v.ddl,
+		TableChanges: &parser.TableChanges{
+			Operation: parser.TableOpAlter,
+		},
+	}
+
+	// Get table name from Relation_expr
+	if relationExpr := ctx.Relation_expr(); relationExpr != nil {
+		schema, table := extractRelationExpr(relationExpr)
+		result.Database = schema
+		result.Table = table
+		result.TableChanges.Table = &parser.TableInfo{
+			Database: schema,
+			Name:     table,
+		}
+	}
+
+	// Get old and new column names from AllName()
+	names := ctx.AllName()
+	if len(names) >= 2 {
+		oldName := extractNameText(names[0])
+		newName := extractNameText(names[1])
+		result.TableChanges.ModifiedColumns = append(result.TableChanges.ModifiedColumns, parser.ColumnModification{
+			Old: parser.ColumnInfo{Name: oldName},
+			New: parser.ColumnInfo{Name: newName},
+		})
 	}
 
 	return result
