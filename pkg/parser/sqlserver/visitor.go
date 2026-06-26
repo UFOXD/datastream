@@ -128,7 +128,7 @@ func (v *DDLVisitor) VisitCreate_table(ctx *generated.Create_tableContext) inter
 		for _, cdtc := range colDefs.AllColumn_def_table_constraint() {
 			constraintCtx := cdtc.(*generated.Column_def_table_constraintContext)
 			if colDef := constraintCtx.Column_definition(); colDef != nil {
-				col := extractColumnInfoFromDef(colDef.(*generated.Column_definitionContext))
+				col := extractColumnInfoFromDef(colDef.(*generated.Column_definitionContext), v.ddl)
 				if col != nil {
 					tableInfo.Columns = append(tableInfo.Columns, *col)
 				}
@@ -171,14 +171,14 @@ func (v *DDLVisitor) VisitAlter_table(ctx *generated.Alter_tableContext) interfa
 			for _, cdtc := range colDefs.AllColumn_def_table_constraint() {
 				constraintCtx := cdtc.(*generated.Column_def_table_constraintContext)
 				if colDef := constraintCtx.Column_definition(); colDef != nil {
-					col := extractColumnInfoFromDef(colDef.(*generated.Column_definitionContext))
+					col := extractColumnInfoFromDef(colDef.(*generated.Column_definitionContext), v.ddl)
 					if col != nil {
 						result.TableChanges.AddedColumns = append(result.TableChanges.AddedColumns, *col)
 					}
 				}
 			}
 		} else if ctx.Column_definition() != nil {
-			col := extractColumnInfoFromDef(ctx.Column_definition().(*generated.Column_definitionContext))
+			col := extractColumnInfoFromDef(ctx.Column_definition().(*generated.Column_definitionContext), v.ddl)
 			if col != nil {
 				result.TableChanges.AddedColumns = append(result.TableChanges.AddedColumns, *col)
 			}
@@ -197,7 +197,7 @@ func (v *DDLVisitor) VisitAlter_table(ctx *generated.Alter_tableContext) interfa
 	// When ALTER TABLE ... ALTER COLUMN col TYPE, Column_definition() is set but ADD() is nil
 	if ctx.ADD() == nil && ctx.DROP() == nil && ctx.Column_definition() != nil {
 		colDef := ctx.Column_definition().(*generated.Column_definitionContext)
-		col := extractColumnInfoFromDef(colDef)
+		col := extractColumnInfoFromDef(colDef, v.ddl)
 		if col != nil {
 			mod := parser.ColumnModification{
 				Old: parser.ColumnInfo{Name: col.Name},
@@ -468,7 +468,7 @@ func extractColumnFromDef(text string) string {
 }
 
 // extractColumnInfoFromDef extracts column info from a Column_definitionContext.
-func extractColumnInfoFromDef(ctx *generated.Column_definitionContext) *parser.ColumnInfo {
+func extractColumnInfoFromDef(ctx *generated.Column_definitionContext, ddl string) *parser.ColumnInfo {
 	if ctx == nil {
 		return nil
 	}
@@ -485,6 +485,12 @@ func extractColumnInfoFromDef(ctx *generated.Column_definitionContext) *parser.C
 	// Extract data type using labeled fields from grammar
 	if dataType := ctx.Data_type(); dataType != nil {
 		col.Type = extractDataTypeString(dataType.(*generated.Data_typeContext))
+	}
+
+	// If grammar didn't capture the type (e.g., NVARCHAR(255) where NVARCHAR is a keyword),
+	// try extracting from the original DDL text.
+	if col.Type == "" && col.Name != "" {
+		col.Type = extractColumnTypeFromDDL(ddl, col.Name)
 	}
 
 	// Check for NULL/NOT NULL constraints and PRIMARY KEY in column_definition_element
@@ -551,8 +557,67 @@ func extractDataTypeString(ctx *generated.Data_typeContext) string {
 	if ctx.GetUnscaled_type() != nil {
 		return strings.ToUpper(ctx.GetUnscaled_type().GetText())
 	}
-	// Fallback
-	return strings.ToUpper(ctx.GetText())
+	// Return empty to let the DDL-text fallback handle it
+	// (grammar may not capture types like NVARCHAR(255) where NVARCHAR is a keyword)
+	return ""
+}
+
+// extractColumnTypeFromDDL extracts the column type from the original DDL text.
+// Used as fallback when the ANTLR grammar doesn't capture the type (e.g., NVARCHAR(255)).
+func extractColumnTypeFromDDL(ddl, colName string) string {
+	upperDDL := strings.ToUpper(ddl)
+	upperCol := strings.ToUpper(colName)
+
+	// Try [colName] first (bracket-quoted)
+	search := "[" + upperCol + "]"
+	idx := strings.Index(upperDDL, search)
+	if idx == -1 {
+		search = upperCol
+		idx = strings.Index(upperDDL, search)
+	}
+	if idx == -1 {
+		return ""
+	}
+
+	rest := ddl[idx+len(search):]
+	rest = strings.TrimSpace(rest)
+
+	// Track parenthesis depth to handle types like NVARCHAR(255) or DECIMAL(10,2)
+	parenDepth := 0
+	end := len(rest)
+	for i, ch := range rest {
+		switch ch {
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth == 0 {
+				end = i
+				goto done
+			}
+			parenDepth--
+		case ',':
+			if parenDepth == 0 {
+				end = i
+				goto done
+			}
+		default:
+			if parenDepth == 0 {
+				upper := strings.ToUpper(rest[i:])
+				for _, kw := range []string{"NOT NULL", "NULL", "PRIMARY", "DEFAULT", "IDENTITY", "CONSTRAINT", "REFERENCES"} {
+					if strings.HasPrefix(upper, kw) {
+						end = i
+						goto done
+					}
+				}
+			}
+		}
+	}
+done:
+	typeStr := strings.TrimSpace(rest[:end])
+	if typeStr == "" {
+		return ""
+	}
+	return strings.ToUpper(typeStr)
 }
 
 // parseTypeString parses a SQL Server type string like "NVARCHAR(255)" or "DECIMAL(10,2)"

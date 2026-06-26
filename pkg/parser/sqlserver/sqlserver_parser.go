@@ -32,6 +32,7 @@ func (p *Parser) Parse(ctx context.Context, ddl string) ([]*parser.DDLResult, er
 	antlrParser := generated.NewTSqlParser(tokenStream)
 
 	// Parse using visitor pattern
+	p.visitor.ddl = ddl // preserve original DDL text with whitespace
 	tree := antlrParser.Tsql_file()
 	result := p.visitor.VisitTsql_file(tree.(*generated.Tsql_fileContext))
 

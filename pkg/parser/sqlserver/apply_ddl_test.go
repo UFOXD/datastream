@@ -26,8 +26,8 @@ func TestApplyDDL_CreateTable(t *testing.T) {
 			expectedTable: "users",
 			expectedCols: []event.ColumnInfo{
 				{Name: "id", Type: "INT"},                                          // PRIMARY KEY -> Nullable false
-				{Name: "name", Type: "NVARCHAR(100)", Length: 100, Nullable: true},  // default nullable
-				{Name: "email", Type: "NVARCHAR(255)", Length: 255, Nullable: true}, // explicit NULL
+				{Name: "name", Type: "NVARCHAR", Length: 100, Nullable: true},  // default nullable
+				{Name: "email", Type: "NVARCHAR", Length: 255, Nullable: true}, // explicit NULL
 			},
 		},
 		{
@@ -47,7 +47,7 @@ func TestApplyDDL_CreateTable(t *testing.T) {
 			expectedTable: "orders",
 			expectedCols: []event.ColumnInfo{
 				{Name: "id", Type: "INT", Nullable: true},
-				{Name: "amount", Type: "DECIMAL(10,2)", Length: 10, Scale: 2, Nullable: true},
+				{Name: "amount", Type: "DECIMAL", Length: 10, Scale: 2, Nullable: true},
 			},
 		},
 	}
@@ -121,7 +121,7 @@ func TestApplyDDL_AlterTable_AddColumn(t *testing.T) {
 			expectedCols: []event.ColumnInfo{
 				{Name: "id", Type: "INT"},
 				{Name: "name", Type: "NVARCHAR", Length: 100},
-				{Name: "email", Type: "NVARCHAR(255)", Length: 255, Nullable: true},
+				{Name: "email", Type: "NVARCHAR", Length: 255, Nullable: true},
 			},
 		},
 		{
