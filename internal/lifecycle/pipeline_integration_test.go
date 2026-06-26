@@ -6,9 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"github.com/UFOXD/datastream/internal/cache"
 	"github.com/UFOXD/datastream/internal/sink"
 	"github.com/UFOXD/datastream/internal/source"
@@ -92,19 +89,29 @@ func TestLifecyclePipelineStartStop(t *testing.T) {
 	store := source.NewMemoryLifecycleStore()
 	dir := t.TempDir()
 	cacheBackend, err := cache.NewLocalBackend(dir, cache.SyncModeNone)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer cacheBackend.Close()
 
 	scheduler := NewSnapshotScheduler(DefaultSchedulerConfig(), "task-1", store, cacheBackend)
 
-	pipeline := NewLifecyclePipeline(src, []sink.Connector{snk}, scheduler, cacheBackend, store, "task-1", cache.SourceTypeMySQLGTID)
+	pipeline := NewLifecyclePipeline(src, []sink.Connector{snk}, scheduler, cacheBackend, store, "task-1", cache.SourceTypeMySQLGTID, nil)
 
 	ctx := context.Background()
-	require.NoError(t, pipeline.Start(ctx))
-	assert.True(t, src.started)
+	if err := pipeline.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !src.started {
+		t.Error("source not started")
+	}
 
-	require.NoError(t, pipeline.Stop(ctx))
-	assert.True(t, src.stopped)
+	if err := pipeline.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !src.stopped {
+		t.Error("source not stopped")
+	}
 }
 
 func TestLifecyclePipelineRoutesEvents(t *testing.T) {
@@ -113,26 +120,42 @@ func TestLifecyclePipelineRoutesEvents(t *testing.T) {
 	store := source.NewMemoryLifecycleStore()
 	dir := t.TempDir()
 	cacheBackend, err := cache.NewLocalBackend(dir, cache.SyncModeNone)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer cacheBackend.Close()
 
 	scheduler := NewSnapshotScheduler(DefaultSchedulerConfig(), "task-1", store, cacheBackend)
 
 	// Add table and transition to streaming state.
 	tid := source.TableID{Database: "db1", Table: "users"}
-	require.NoError(t, scheduler.AddTable(tid, &event.Position{TxID: "uuid:1", CommitTime: time.Now()}))
+	if err := scheduler.AddTable(tid, &event.Position{TxID: "uuid:1", CommitTime: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
 
 	lc, err := store.Get(context.Background(), "task-1", tid)
-	require.NoError(t, err)
-	require.NoError(t, lc.TransitionTo(source.TableStateSnapshotting, &event.Position{TxID: "uuid:1"}))
-	require.NoError(t, lc.TransitionTo(source.TableStateCatchingUp, nil))
-	require.NoError(t, lc.TransitionTo(source.TableStateStreaming, nil))
-	require.NoError(t, store.Save(context.Background(), "task-1", lc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lc.TransitionTo(source.TableStateSnapshotting, &event.Position{TxID: "uuid:1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lc.TransitionTo(source.TableStateCatchingUp, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := lc.TransitionTo(source.TableStateStreaming, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(context.Background(), "task-1", lc); err != nil {
+		t.Fatal(err)
+	}
 
-	pipeline := NewLifecyclePipeline(src, []sink.Connector{snk}, scheduler, cacheBackend, store, "task-1", cache.SourceTypeMySQLGTID)
+	pipeline := NewLifecyclePipeline(src, []sink.Connector{snk}, scheduler, cacheBackend, store, "task-1", cache.SourceTypeMySQLGTID, nil)
 
 	ctx := context.Background()
-	require.NoError(t, pipeline.Start(ctx))
+	if err := pipeline.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	// Send an event for the streaming table.
 	src.events <- &event.ChangeEvent{
@@ -142,7 +165,116 @@ func TestLifecyclePipelineRoutesEvents(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// The event should arrive at the sink since the table is in streaming state.
-	assert.GreaterOrEqual(t, snk.writeCount(), 1)
+	if snk.writeCount() < 1 {
+		t.Errorf("expected at least 1 sink write, got %d", snk.writeCount())
+	}
 
-	require.NoError(t, pipeline.Stop(ctx))
+	if err := pipeline.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestBinlogConsumerFlushWaitsForPendingDML verifies that flushPending
+// blocks until all in-flight DML writes complete.
+func TestBinlogConsumerFlushWaitsForPendingDML(t *testing.T) {
+	taskID := "task-1"
+	tid := source.TableID{Database: "mydb", Table: "users"}
+	lstore := setupStore(t, taskID, map[source.TableID]source.TableState{
+		tid: source.TableStateStreaming,
+	})
+	cb := newMockCacheBackend()
+
+	// Slow sink that blocks until signaled.
+	writeStarted := make(chan struct{})
+	unblockWrite := make(chan struct{})
+	slowSink := &slowEventSink{
+		writeStarted: writeStarted,
+		unblockWrite: unblockWrite,
+	}
+
+	consumer := NewBinlogConsumer(taskID, lstore, cb, slowSink, cache.SourceTypeMySQLGTID, nil, nil, nil, nil, nil)
+
+	ctx := context.Background()
+
+	// Start a DML write in a goroutine (simulates async DML).
+	go func() {
+		ev := makeChangeEvent("mydb", "users", "gtid-1", 1)
+		_ = consumer.Route(ctx, ev)
+	}()
+
+	// Wait for the write to start.
+	<-writeStarted
+
+	// flushPending should block until the DML write completes.
+	done := make(chan struct{})
+	go func() {
+		consumer.flushPending()
+		close(done)
+	}()
+
+	// Verify flushPending is still blocking.
+	select {
+	case <-done:
+		t.Fatal("flushPending returned before DML write completed")
+	case <-time.After(100 * time.Millisecond):
+		// Expected: still blocking.
+	}
+
+	// Unblock the DML write.
+	close(unblockWrite)
+
+	// Now flushPending should return.
+	select {
+	case <-done:
+		// Expected: flushPending returned after DML completed.
+	case <-time.After(2 * time.Second):
+		t.Fatal("flushPending did not return within timeout after unblock")
+	}
+}
+
+// slowEventSink is a sink that signals when a write starts and blocks
+// until unblockWrite is closed.
+type slowEventSink struct {
+	writeStarted chan struct{}
+	unblockWrite chan struct{}
+}
+
+func (s *slowEventSink) Write(_ context.Context, _ []*event.ChangeEvent) error {
+	select {
+	case s.writeStarted <- struct{}{}:
+	default:
+	}
+	<-s.unblockWrite
+	return nil
+}
+
+// TestBinlogConsumerDDLEventDiscardedWhenNoDeps verifies that DDL events
+// are silently discarded when DDL dependencies are not configured.
+func TestBinlogConsumerDDLEventDiscardedWhenNoDeps(t *testing.T) {
+	taskID := "task-1"
+	lstore := source.NewMemoryLifecycleStore()
+	cb := newMockCacheBackend()
+	sink := &mockEventSink{}
+
+	consumer := NewBinlogConsumer(taskID, lstore, cb, sink, cache.SourceTypeMySQLGTID, nil, nil, nil, nil, nil)
+
+	ev := &event.ChangeEvent{
+		Type: event.EventTypeDDL,
+		Table: event.TableInfo{
+			Database: "mydb",
+			Table:    "users",
+		},
+		Metadata: map[string]string{
+			"ddl": "ALTER TABLE users ADD COLUMN age INT",
+		},
+		Timestamp: time.Now(),
+	}
+
+	err := consumer.Route(context.Background(), ev)
+	if err != nil {
+		t.Fatalf("expected nil error for DDL without deps, got: %v", err)
+	}
+	if sink.count() != 0 {
+		t.Fatalf("expected 0 sink writes, got %d", sink.count())
+	}
 }
