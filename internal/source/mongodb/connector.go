@@ -10,6 +10,7 @@ import (
 
 	"github.com/UFOXD/datastream/internal/offset"
 	"github.com/UFOXD/datastream/internal/source"
+	"github.com/UFOXD/datastream/internal/store"
 	"github.com/UFOXD/datastream/pkg/event"
 	"github.com/pingcap/log"
 	"go.mongodb.org/mongo-driver/bson"
@@ -40,9 +41,12 @@ type Connector struct {
 	// Resume token
 	resumeToken bson.Raw
 
-	// Offset storage
+	// Offset storage (legacy, used when TargetStore is nil)
 	offsetStorage offset.Storage
 	taskID        string
+
+	// TargetStore for unified position storage
+	store store.TargetStore
 
 	// Sync scope
 	syncScope *source.SyncScope
@@ -102,8 +106,27 @@ func (c *Connector) Initialize(ctx context.Context, config source.Config) error 
 
 	c.client = client
 
-	// Initialize offset storage
-	if config.Offset.Backend != "" {
+	// Initialize TargetStore for unified position storage
+	if config.TargetStore != nil {
+		c.store = config.TargetStore
+		// InitDatabase creates the ds_{task_id} database and tables
+		if err := c.store.InitDatabase(ctx); err != nil {
+			client.Disconnect(ctx)
+			return fmt.Errorf("failed to init target store: %w", err)
+		}
+		// Recover position from TargetStore
+		_, current, err := c.store.LoadPositions(ctx)
+		if err != nil {
+			log.Warn("failed to load positions from target store", zap.Error(err))
+		} else if current != nil && len(current.ResumeToken) > 0 {
+			c.position = current
+			c.resumeToken = bson.Raw(current.ResumeToken)
+			log.Info("recovered position from target store",
+				zap.Uint64("timestamp", current.Timestamp),
+				zap.Int("resumeTokenLen", len(current.ResumeToken)))
+		}
+	} else if config.Offset.Backend != "" {
+		// Fallback to offset storage if TargetStore is not provided
 		offsetCfg := &offset.Config{
 			Backend:       config.Offset.Backend,
 			Path:          config.Offset.Path,
@@ -124,13 +147,12 @@ func (c *Connector) Initialize(ctx context.Context, config source.Config) error 
 				zap.Error(err))
 		} else if pos != nil && pos.Timestamp > 0 {
 			c.position = pos
-			// Resume token would be loaded here if stored
 			log.Info("loaded position from offset storage",
 				zap.Uint64("timestamp", pos.Timestamp))
 		}
 	}
 
-	// Set resume token if configured
+	// Set resume token if configured (overrides recovered position)
 	if cfg.ResumeToken != "" {
 		c.resumeToken = bson.Raw([]byte(cfg.ResumeToken))
 	}
@@ -261,7 +283,14 @@ func (c *Connector) Stop(ctx context.Context) error {
 		client.Disconnect(ctx)
 	}
 
-	// Save final position to offset storage
+	// Save final position to TargetStore
+	if c.store != nil && c.position != nil {
+		if err := c.store.SaveCurrentPosition(ctx, c.position); err != nil {
+			log.Warn("failed to save final position to target store", zap.Error(err))
+		}
+	}
+
+	// Save final position to offset storage (legacy)
 	if c.offsetStorage != nil && c.position != nil {
 		if err := c.offsetStorage.Save(ctx, c.taskID, c.position); err != nil {
 			log.Warn("failed to save final position to offset storage", zap.Error(err))
@@ -310,7 +339,15 @@ func (c *Connector) SetPosition(pos *event.Position) error {
 	defer c.mu.Unlock()
 	c.position = pos.Clone()
 
-	// Save to offset storage
+	// Save to TargetStore
+	if c.store != nil {
+		ctx := context.Background()
+		if err := c.store.SaveCurrentPosition(ctx, c.position); err != nil {
+			log.Warn("failed to save position to target store", zap.Error(err))
+		}
+	}
+
+	// Save to offset storage (legacy)
 	if c.offsetStorage != nil {
 		ctx := context.Background()
 		if err := c.offsetStorage.Save(ctx, c.taskID, c.position); err != nil {
@@ -478,8 +515,9 @@ func (c *Connector) run(ctx context.Context) {
 			}
 
 			// Get resume token
+			resumeToken := stream.ResumeToken()
 			c.mu.Lock()
-			c.resumeToken = stream.ResumeToken()
+			c.resumeToken = resumeToken
 			c.mu.Unlock()
 
 			// Decode change event
@@ -498,10 +536,21 @@ func (c *Connector) run(ctx context.Context) {
 				continue
 			}
 
+			// Set resume token on position for TargetStore persistence
+			evt.Position.ResumeToken = make([]byte, len(resumeToken))
+			copy(evt.Position.ResumeToken, resumeToken)
+
 			// Update position
 			c.mu.Lock()
 			c.position = &evt.Position
 			c.mu.Unlock()
+
+			// Save current position to TargetStore
+			if c.store != nil {
+				if err := c.store.SaveCurrentPosition(ctx, &evt.Position); err != nil {
+					log.Warn("failed to save current position to target store", zap.Error(err))
+				}
+			}
 
 			// Send event
 			select {

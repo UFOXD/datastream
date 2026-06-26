@@ -4,6 +4,7 @@ package source
 import (
 	"context"
 
+	"github.com/UFOXD/datastream/internal/store"
 	"github.com/UFOXD/datastream/pkg/event"
 )
 
@@ -77,6 +78,10 @@ type Config struct {
 
 	// SyncScope defines what databases/tables to sync
 	SyncScope *SyncScope `json:"syncScope" toml:"sync-scope"`
+
+	// TargetStore for unified task metadata storage (positions, lifecycle, etc.)
+	// If nil, connectors may fall back to Offset storage.
+	TargetStore store.TargetStore `json:"-"`
 }
 
 // ConnectionConfig holds database connection configuration.
