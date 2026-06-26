@@ -130,7 +130,7 @@ func TestBinlogConsumerRoutesToCache(t *testing.T) {
 	cb := newMockCacheBackend()
 	sink := &mockEventSink{}
 
-	consumer := NewBinlogConsumer(taskID, store, cb, sink, cache.SourceTypeMySQLGTID)
+	consumer := NewBinlogConsumer(taskID, store, cb, sink, cache.SourceTypeMySQLGTID, nil, nil, nil, nil, nil)
 
 	ev := makeChangeEvent("mydb", "users", "gtid-abc", 1)
 	if err := consumer.Route(context.Background(), ev); err != nil {
@@ -168,7 +168,7 @@ func TestBinlogConsumerRoutesToSink(t *testing.T) {
 	cb := newMockCacheBackend()
 	sink := &mockEventSink{}
 
-	consumer := NewBinlogConsumer(taskID, store, cb, sink, cache.SourceTypeMySQLGTID)
+	consumer := NewBinlogConsumer(taskID, store, cb, sink, cache.SourceTypeMySQLGTID, nil, nil, nil, nil, nil)
 
 	ev := makeChangeEvent("mydb", "orders", "gtid-xyz", 2)
 	if err := consumer.Route(context.Background(), ev); err != nil {
@@ -192,7 +192,7 @@ func TestBinlogConsumerDiscardsPending(t *testing.T) {
 	cb := newMockCacheBackend()
 	sink := &mockEventSink{}
 
-	consumer := NewBinlogConsumer(taskID, store, cb, sink, cache.SourceTypeMySQLGTID)
+	consumer := NewBinlogConsumer(taskID, store, cb, sink, cache.SourceTypeMySQLGTID, nil, nil, nil, nil, nil)
 
 	ev := makeChangeEvent("mydb", "pending_tbl", "gtid-111", 1)
 	if err := consumer.Route(context.Background(), ev); err != nil {
@@ -213,7 +213,7 @@ func TestBinlogConsumerDiscardsUnknownTable(t *testing.T) {
 	cb := newMockCacheBackend()
 	sink := &mockEventSink{}
 
-	consumer := NewBinlogConsumer(taskID, store, cb, sink, cache.SourceTypeMySQLGTID)
+	consumer := NewBinlogConsumer(taskID, store, cb, sink, cache.SourceTypeMySQLGTID, nil, nil, nil, nil, nil)
 
 	ev := makeChangeEvent("mydb", "unknown_tbl", "gtid-222", 1)
 	if err := consumer.Route(context.Background(), ev); err != nil {
@@ -237,7 +237,7 @@ func TestBinlogConsumerCatchingUpRoutesToSink(t *testing.T) {
 	cb := newMockCacheBackend()
 	sink := &mockEventSink{}
 
-	consumer := NewBinlogConsumer(taskID, store, cb, sink, cache.SourceTypeMySQLGTID)
+	consumer := NewBinlogConsumer(taskID, store, cb, sink, cache.SourceTypeMySQLGTID, nil, nil, nil, nil, nil)
 
 	ev := makeChangeEvent("mydb", "catching_tbl", "gtid-333", 3)
 	if err := consumer.Route(context.Background(), ev); err != nil {

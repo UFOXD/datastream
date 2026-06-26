@@ -5,9 +5,12 @@ import (
 	"sync"
 
 	"github.com/UFOXD/datastream/internal/cache"
+	"github.com/UFOXD/datastream/internal/schema"
 	"github.com/UFOXD/datastream/internal/sink"
 	"github.com/UFOXD/datastream/internal/source"
+	"github.com/UFOXD/datastream/internal/store"
 	"github.com/UFOXD/datastream/pkg/event"
+	"github.com/UFOXD/datastream/pkg/parser"
 )
 
 // SinkAdapter wraps a sink.Connector to implement the EventSink interface.
@@ -31,18 +34,47 @@ type LifecyclePipeline struct {
 	wg        sync.WaitGroup
 }
 
+// DDLDependencies groups the optional DDL-handling dependencies.
+// When all fields are non-nil, the pipeline supports synchronous DDL processing.
+type DDLDependencies struct {
+	Parser     parser.DDLParser
+	Tables     *schema.Tables
+	DDLRecords *schema.DDLRecordManager
+	History    schema.SchemaHistory
+	DDLStore   store.TargetStore
+}
+
 // NewLifecyclePipeline creates a new LifecyclePipeline.
+// ddlDeps is optional; pass nil to disable DDL handling.
 func NewLifecyclePipeline(
 	src source.Connector,
 	sinks []sink.Connector,
 	scheduler *SnapshotScheduler,
 	cacheBackend cache.BinlogCacheBackend,
-	store source.TableLifecycleStore,
+	lifecycleStore source.TableLifecycleStore,
 	taskID string,
 	sourceType cache.SourceType,
+	ddlDeps *DDLDependencies,
 ) *LifecyclePipeline {
 	sinkAdapter := &SinkAdapter{sink: sinks[0]}
-	consumer := NewBinlogConsumer(taskID, store, cacheBackend, sinkAdapter, sourceType)
+
+	var (
+		ddlParser     parser.DDLParser
+		tables        *schema.Tables
+		ddlRecords    *schema.DDLRecordManager
+		history       schema.SchemaHistory
+		ddlStore      store.TargetStore
+	)
+	if ddlDeps != nil {
+		ddlParser = ddlDeps.Parser
+		tables = ddlDeps.Tables
+		ddlRecords = ddlDeps.DDLRecords
+		history = ddlDeps.History
+		ddlStore = ddlDeps.DDLStore
+	}
+
+	consumer := NewBinlogConsumer(taskID, lifecycleStore, cacheBackend, sinkAdapter, sourceType,
+		ddlParser, tables, ddlRecords, history, ddlStore)
 
 	return &LifecyclePipeline{
 		source:    src,
