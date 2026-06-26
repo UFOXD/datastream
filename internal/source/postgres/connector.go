@@ -9,9 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/UFOXD/datastream/pkg/event"
 	"github.com/UFOXD/datastream/internal/offset"
+	"github.com/UFOXD/datastream/internal/schema"
 	"github.com/UFOXD/datastream/internal/source"
+	"github.com/UFOXD/datastream/internal/store"
+	"github.com/UFOXD/datastream/pkg/event"
+	"github.com/UFOXD/datastream/pkg/parser"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
@@ -31,6 +34,18 @@ type Connector struct {
 	wg          sync.WaitGroup
 	mu          sync.RWMutex
 	schemaCache map[string]*event.TableInfo
+
+	// In-memory table definitions from SchemaHistory
+	tables *schema.Tables
+
+	// Unified task metadata storage (positions, schema history, etc.)
+	store store.TargetStore
+
+	// Schema history persistence
+	schemaHistory schema.SchemaHistory
+
+	// DDL parser
+	ddlParser parser.DDLParser
 
 	// Replication connection
 	pgConn *pgconn.PgConn
@@ -110,6 +125,26 @@ func (c *Connector) Initialize(ctx context.Context, config source.Config) error 
 	}
 
 	c.db = db
+
+	// Initialize in-memory Tables
+	c.tables = schema.NewTables()
+
+	// Initialize TargetStore (noop until a target DB is configured)
+	c.store = store.NewNoopStore()
+
+	// Initialize schema history and recover into Tables
+	c.schemaHistory = schema.NewStoreSchemaHistory(c.store)
+	if err := c.schemaHistory.Recover(ctx, c.tables, c.position); err != nil {
+		log.Warn("failed to recover schema history into Tables",
+			zap.Error(err))
+	}
+
+	// Get DDL parser from registry
+	if p := parser.DefaultRegistry.Get("postgres"); p != nil {
+		c.ddlParser = p
+	} else {
+		log.Warn("PostgreSQL DDL parser not found, DDL events will use relation messages only")
+	}
 
 	// Initialize offset storage
 	if config.Offset.Backend != "" {
@@ -287,6 +322,16 @@ func (c *Connector) Stop(ctx context.Context) error {
 		c.offsetStorage.Close()
 	}
 
+	// Close schema history
+	if c.schemaHistory != nil {
+		c.schemaHistory.Close()
+	}
+
+	// Close store
+	if c.store != nil {
+		c.store.Close()
+	}
+
 	log.Info("PostgreSQL connector stopped")
 	return nil
 }
@@ -338,12 +383,21 @@ func (c *Connector) SetPosition(pos *event.Position) error {
 }
 
 // GetSchema returns the schema for a table.
+// Prefers in-memory Tables (from SchemaHistory), falls back to schemaCache.
 func (c *Connector) GetSchema(database, table string) (*event.TableInfo, error) {
+	// Prefer Tables from SchemaHistory
+	if c.tables != nil {
+		if info := c.tables.Get(database, table); info != nil {
+			return info.Clone(), nil
+		}
+	}
+
+	// Fallback to schema cache (populated by relation messages)
 	c.mu.RLock()
 	key := database + "." + table
-	if schema, ok := c.schemaCache[key]; ok {
+	if cached, ok := c.schemaCache[key]; ok {
 		c.mu.RUnlock()
-		return schema.Clone(), nil
+		return cached.Clone(), nil
 	}
 	c.mu.RUnlock()
 
@@ -352,8 +406,27 @@ func (c *Connector) GetSchema(database, table string) (*event.TableInfo, error) 
 }
 
 // Schemas returns all cached table schemas.
+// Returns Tables (from SchemaHistory) merged with schemaCache.
 func (c *Connector) Schemas() map[string]*event.TableInfo {
-	return make(map[string]*event.TableInfo)
+	result := make(map[string]*event.TableInfo)
+
+	// Start with Tables (SchemaHistory has priority)
+	if c.tables != nil {
+		for k, v := range c.tables.All() {
+			result[k] = v
+		}
+	}
+
+	// Merge in schemaCache for any tables not in Tables
+	c.mu.RLock()
+	for k, v := range c.schemaCache {
+		if _, exists := result[k]; !exists {
+			result[k] = v
+		}
+	}
+	c.mu.RUnlock()
+
+	return result
 }
 
 // SyncScope returns the current sync scope.
