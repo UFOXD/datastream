@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/UFOXD/datastream/internal/source"
+	"github.com/UFOXD/datastream/pkg/event"
 )
 
 // Compile-time interface compliance check
@@ -126,4 +127,72 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.BatchSize != 1000 {
 		t.Errorf("expected default batch size 1000, got %d", cfg.BatchSize)
 	}
+}
+
+func TestIsDDLStatement(t *testing.T) {
+	tests := []struct {
+		name   string
+		sql    string
+		expect bool
+	}{
+		{"CREATE TABLE", "CREATE TABLE users (id INT)", true},
+		{"ALTER TABLE", "ALTER TABLE users ADD col VARCHAR2(100)", true},
+		{"DROP TABLE", "DROP TABLE users", true},
+		{"TRUNCATE TABLE", "TRUNCATE TABLE users", true},
+		{"RENAME TABLE", "RENAME users TO accounts", true},
+		{"lowercase create", "create table t (id int)", true},
+		{"leading whitespace", "  ALTER TABLE t ADD col INT", true},
+		{"INSERT", "INSERT INTO users (id) VALUES (1)", false},
+		{"UPDATE", "UPDATE users SET name = 'a'", false},
+		{"DELETE", "DELETE FROM users WHERE id = 1", false},
+		{"SELECT", "SELECT * FROM users", false},
+		{"empty", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isDDLStatement(tt.sql)
+			if got != tt.expect {
+				t.Errorf("isDDLStatement(%q) = %v, want %v", tt.sql, got, tt.expect)
+			}
+		})
+	}
+}
+
+func TestConnectorFieldsInitialized(t *testing.T) {
+	c := New()
+	// Before Initialize, these should be zero-valued
+	if c.tables != nil {
+		t.Error("tables should be nil before Initialize")
+	}
+	if c.store != nil {
+		t.Error("store should be nil before Initialize")
+	}
+	if c.history != nil {
+		t.Error("history should be nil before Initialize")
+	}
+	if c.ddlParser != nil {
+		t.Error("ddlParser should be nil before Initialize")
+	}
+}
+
+func TestHandleDDLEventWithNoMetadata(t *testing.T) {
+	c := New()
+	// handleDDLEvent should not panic with empty metadata
+	ev := &event.ChangeEvent{
+		Type:     event.EventTypeDDL,
+		Metadata: map[string]string{},
+	}
+	c.handleDDLEvent(nil, ev) // should not panic
+}
+
+func TestHandleDDLEventWithDML(t *testing.T) {
+	c := New()
+	// DML in metadata should be ignored by isDDLStatement check
+	ev := &event.ChangeEvent{
+		Type:     event.EventTypeDDL,
+		Metadata: map[string]string{"sql": "INSERT INTO t VALUES (1)"},
+		Table:    event.TableInfo{Database: "TEST", Table: "T"},
+	}
+	c.handleDDLEvent(nil, ev) // should not panic, should be no-op
 }
