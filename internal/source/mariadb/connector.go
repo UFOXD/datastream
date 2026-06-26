@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/UFOXD/datastream/internal/offset"
+	"github.com/UFOXD/datastream/internal/schema"
 	"github.com/UFOXD/datastream/internal/source"
+	"github.com/UFOXD/datastream/internal/store"
 	"github.com/UFOXD/datastream/pkg/event"
 	"github.com/UFOXD/datastream/pkg/parser"
 	"github.com/go-mysql-org/go-mysql/mysql"
@@ -36,6 +39,12 @@ type Connector struct {
 
 	// Schema cache for independent schema management
 	schemaCache *TableSchemaCache
+
+	// In-memory table definitions from SchemaHistory
+	tables *schema.Tables
+
+	// Unified task metadata storage on target side
+	store store.TargetStore
 
 	// Database connection for schema queries
 	db *sql.DB
@@ -123,6 +132,40 @@ func (c *Connector) Initialize(ctx context.Context, config source.Config) error 
 	// Initialize schema cache with database connection
 	c.schemaCache = NewTableSchemaCache(db)
 
+	// Initialize in-memory Tables
+	c.tables = schema.NewTables()
+
+	// Initialize TargetStore for unified task metadata storage
+	taskID := config.Type
+	if taskID == "" {
+		taskID = "mariadb"
+	}
+	c.store = store.NewMySQLStore(db, taskID)
+	if err := c.store.InitDatabase(ctx); err != nil {
+		log.Warn("failed to init target store database, continuing without store",
+			zap.Error(err))
+		c.store = nil
+	} else {
+		// Recover in-memory Tables from persisted SchemaHistory
+		history, err := c.store.LoadSchemaHistory(ctx)
+		if err != nil {
+			log.Warn("failed to load schema history for recovery", zap.Error(err))
+		} else {
+			for _, rec := range history {
+				if rec.TableInfo != nil {
+					c.tables.Put(rec.TableInfo)
+				} else if rec.ChangeType == "DROP" {
+					c.tables.Remove(rec.DBName, rec.TableName)
+				}
+			}
+			if len(history) > 0 {
+				log.Info("recovered tables from schema history",
+					zap.Int("records", len(history)),
+					zap.Int("tables", c.tables.Count()))
+			}
+		}
+	}
+
 	// Initialize offset storage
 	if config.Offset.Backend != "" {
 		offsetCfg := &offset.Config{
@@ -183,7 +226,7 @@ func (c *Connector) Start(ctx context.Context) error {
 	log.Info("starting MariaDB connector")
 
 	// Create binlog syncer (replaces canal.Canal)
-	c.syncer = NewBinlogSyncer(c.config, c.schemaCache, c.events, c.errors)
+	c.syncer = NewBinlogSyncer(c.config, c.syncScope, c.schemaCache, c.tables, c.store, c.events, c.errors)
 
 	// Start the syncer
 	if err := c.syncer.Start(ctx, c.position); err != nil {
@@ -232,6 +275,11 @@ func (c *Connector) Stop(ctx context.Context) error {
 	// Close offset storage
 	if c.offsetStorage != nil {
 		c.offsetStorage.Close()
+	}
+
+	// Close target store
+	if c.store != nil {
+		c.store.Close()
 	}
 
 	// Close database connection
@@ -292,8 +340,23 @@ func (c *Connector) GetSchema(database, table string) (*event.TableInfo, error) 
 }
 
 // Schemas returns all cached table schemas.
+// Merges in-memory Tables (from SchemaHistory) with schemaCache;
+// Tables takes priority for keys that exist in both.
 func (c *Connector) Schemas() map[string]*event.TableInfo {
-	return make(map[string]*event.TableInfo)
+	result := make(map[string]*event.TableInfo)
+	// Start with schemaCache as base
+	if c.schemaCache != nil {
+		for k, v := range c.schemaCache.All() {
+			result[k] = v
+		}
+	}
+	// Overlay with Tables (higher priority)
+	if c.tables != nil {
+		for k, v := range c.tables.All() {
+			result[k] = v
+		}
+	}
+	return result
 }
 
 // SyncScope returns the current sync scope.
@@ -306,12 +369,19 @@ func (c *Connector) SyncScope() *source.SyncScope {
 // AddTables adds tables to sync (table-level only).
 func (c *Connector) AddTables(ctx context.Context, tables []string) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.syncScope == nil || c.syncScope.Level != source.SyncLevelTable {
+		c.mu.Unlock()
 		return source.ErrInvalidSyncScope
 	}
 	for _, t := range tables {
 		c.syncScope.Tables.Names = append(c.syncScope.Tables.Names, t)
+	}
+	updated := c.syncScope
+	syncer := c.syncer
+	c.mu.Unlock()
+
+	if syncer != nil {
+		syncer.UpdateSyncScope(updated)
 	}
 	return nil
 }
@@ -319,8 +389,8 @@ func (c *Connector) AddTables(ctx context.Context, tables []string) error {
 // RemoveTables removes tables from sync (table-level only).
 func (c *Connector) RemoveTables(ctx context.Context, tables []string) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.syncScope == nil || c.syncScope.Level != source.SyncLevelTable {
+		c.mu.Unlock()
 		return source.ErrInvalidSyncScope
 	}
 	remove := make(map[string]struct{}, len(tables))
@@ -334,6 +404,13 @@ func (c *Connector) RemoveTables(ctx context.Context, tables []string) error {
 		}
 	}
 	c.syncScope.Tables.Names = names
+	updated := c.syncScope
+	syncer := c.syncer
+	c.mu.Unlock()
+
+	if syncer != nil {
+		syncer.UpdateSyncScope(updated)
+	}
 	return nil
 }
 
@@ -505,6 +582,18 @@ func (c *TableSchemaCache) InvalidateAll() {
 	c.schemas = make(map[string]*event.TableInfo)
 }
 
+// All returns a snapshot of all cached schemas.
+// The returned map is a copy; mutations do not affect the internal cache.
+func (c *TableSchemaCache) All() map[string]*event.TableInfo {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	m := make(map[string]*event.TableInfo, len(c.schemas))
+	for k, v := range c.schemas {
+		m[k] = v
+	}
+	return m
+}
+
 // querySchema queries the table schema from INFORMATION_SCHEMA.
 func (c *TableSchemaCache) querySchema(ctx context.Context, database, table string) (*event.TableInfo, error) {
 	info := &event.TableInfo{
@@ -565,6 +654,12 @@ type BinlogSyncer struct {
 	streamer    *replication.BinlogStreamer
 	parser      parser.DDLParser
 	schemaCache *TableSchemaCache
+	tables      *schema.Tables  // in-memory table definitions from SchemaHistory
+	store       store.TargetStore // unified task metadata storage
+
+	// syncScope is the syncer's own deep copy of the scope.
+	syncScope   *source.SyncScope
+	syncScopeMu sync.RWMutex
 
 	events chan *event.ChangeEvent
 	errors chan error
@@ -583,15 +678,29 @@ type BinlogSyncer struct {
 }
 
 // NewBinlogSyncer creates a new binlog syncer.
-func NewBinlogSyncer(config *Config, schemaCache *TableSchemaCache, events chan *event.ChangeEvent, errors chan error) *BinlogSyncer {
+// It stores a deep copy of syncScope so that mutations on the Connector's
+// copy (e.g. AddTables/RemoveTables) do not race with the binlog goroutine.
+func NewBinlogSyncer(config *Config, syncScope *source.SyncScope, schemaCache *TableSchemaCache, tables *schema.Tables, targetStore store.TargetStore, events chan *event.ChangeEvent, errors chan error) *BinlogSyncer {
 	return &BinlogSyncer{
 		config:           config,
+		syncScope:        syncScope.Clone(),
 		schemaCache:      schemaCache,
+		tables:           tables,
+		store:            targetStore,
 		events:           events,
 		errors:           errors,
 		tableColumnTypes: make(map[uint64][]byte),
 		tableColumnMetas: make(map[uint64][]uint16),
 	}
+}
+
+// UpdateSyncScope replaces the syncer's internal scope with a deep copy of
+// the provided scope. Safe to call from any goroutine while the binlog
+// goroutine is running.
+func (s *BinlogSyncer) UpdateSyncScope(newScope *source.SyncScope) {
+	s.syncScopeMu.Lock()
+	s.syncScope = newScope.Clone()
+	s.syncScopeMu.Unlock()
 }
 
 // Start starts the binlog syncer.
@@ -721,6 +830,8 @@ func (s *BinlogSyncer) processEvent(ev *replication.BinlogEvent) error {
 		return s.handleXIDEvent(ev)
 	case *replication.GTIDEvent:
 		return s.handleGTIDEvent(ev)
+	case *replication.MariadbGTIDEvent:
+		return s.handleMariaDBGTIDEvent(ev)
 	}
 	return nil
 }
@@ -814,6 +925,52 @@ func (s *BinlogSyncer) handleQueryEvent(ev *replication.BinlogEvent) error {
 		s.schemaCache.InvalidateAll()
 	}
 
+	// Apply DDL to update in-memory Tables and write SchemaHistory
+	var oldTable *event.TableInfo
+	if ddlResult != nil && ddlResult.Table != "" {
+		if s.tables != nil {
+			oldTable = s.tables.Get(ddlResult.Database, ddlResult.Table)
+		}
+		if s.parser != nil {
+			applyResult, err := s.parser.ApplyDDL(s.ctx, oldTable, query)
+			if err == nil && applyResult != nil {
+				if applyResult.NewTableInfo != nil && s.tables != nil {
+					s.tables.Put(applyResult.NewTableInfo)
+				} else if ddlResult.Type == parser.DDLTypeDropTable && s.tables != nil {
+					s.tables.Remove(ddlResult.Database, ddlResult.Table)
+				}
+			}
+		}
+	}
+
+	// Write SchemaHistory to TargetStore
+	if s.store != nil && ddlResult != nil && ddlResult.Table != "" {
+		var tableInfo *event.TableInfo
+		if s.tables != nil {
+			tableInfo = s.tables.Get(ddlResult.Database, ddlResult.Table)
+		}
+		changeType := "ALTER"
+		if tableInfo == nil {
+			changeType = "DROP"
+		} else if oldTable == nil {
+			changeType = "CREATE"
+		}
+		histRec := &store.SchemaHistoryRow{
+			Position:   changeEvent.Position,
+			DBName:     ddlResult.Database,
+			TableName:  ddlResult.Table,
+			DDL:        query,
+			TableInfo:  tableInfo,
+			ChangeType: changeType,
+		}
+		if err := s.store.SaveSchemaHistory(s.ctx, histRec); err != nil {
+			log.Warn("failed to save schema history",
+				zap.String("database", ddlResult.Database),
+				zap.String("table", ddlResult.Table),
+				zap.Error(err))
+		}
+	}
+
 	s.positionMu.Lock()
 	s.position = &changeEvent.Position
 	s.positionMu.Unlock()
@@ -842,10 +999,24 @@ func (s *BinlogSyncer) handleRowsEvent(ev *replication.BinlogEvent) error {
 		return nil
 	}
 
-	tableInfo, err := s.schemaCache.Get(s.ctx, database, table)
-	if err != nil {
-		log.Warn("failed to get table schema", zap.String("database", database), zap.String("table", table), zap.Error(err))
-		tableInfo = &event.TableInfo{Database: database, Table: table}
+	// Get table schema: prefer in-memory Tables (from SchemaHistory), fallback to schemaCache
+	var tableInfo *event.TableInfo
+	if s.tables != nil {
+		tableInfo = s.tables.Get(database, table)
+	}
+	if tableInfo == nil {
+		var err error
+		tableInfo, err = s.schemaCache.Get(s.ctx, database, table)
+		if err != nil {
+			log.Warn("failed to get table schema, using minimal info",
+				zap.String("database", database),
+				zap.String("table", table),
+				zap.Error(err))
+			tableInfo = &event.TableInfo{
+				Database: database,
+				Table:    table,
+			}
+		}
 	}
 
 	var eventType event.EventType
@@ -891,10 +1062,49 @@ func (s *BinlogSyncer) handleXIDEvent(ev *replication.BinlogEvent) error {
 }
 
 func (s *BinlogSyncer) handleGTIDEvent(ev *replication.BinlogEvent) error {
+	// MySQL GTIDEvent is not used in MariaDB mode; handled by handleMariaDBGTIDEvent.
+	return nil
+}
+
+// handleMariaDBGTIDEvent captures the MariaDB GTID into the current position.
+// MariaDB GTID format: domain_id:server_id:sequence
+func (s *BinlogSyncer) handleMariaDBGTIDEvent(ev *replication.BinlogEvent) error {
+	gtidEv, ok := ev.Event.(*replication.MariadbGTIDEvent)
+	if !ok {
+		return nil
+	}
+
+	gtid := fmt.Sprintf("%d:%d:%d",
+		gtidEv.GTID.DomainID,
+		gtidEv.GTID.ServerID,
+		gtidEv.GTID.SequenceNumber)
+
+	s.positionMu.Lock()
+	if s.position == nil {
+		s.position = &event.Position{}
+	}
+	s.position.TxID = gtid
+	s.positionMu.Unlock()
+
 	return nil
 }
 
 func (s *BinlogSyncer) shouldCapture(database, table string) bool {
+	// Use SyncScope when available
+	s.syncScopeMu.RLock()
+	scope := s.syncScope
+	s.syncScopeMu.RUnlock()
+
+	if scope != nil {
+		switch scope.Level {
+		case source.SyncLevelDatabase:
+			return scope.Databases.ShouldSyncTable(database, table)
+		case source.SyncLevelTable:
+			return scope.Tables.ShouldSyncTable(database, table)
+		}
+	}
+
+	// Fallback: legacy config.Databases / config.Tables
 	if len(s.config.Databases) == 0 {
 		return true
 	}
@@ -981,28 +1191,12 @@ func (s *BinlogSyncer) buildRowData(columns []event.ColumnInfo, values []interfa
 }
 
 func isDDL(query string) bool {
-	upper := query[:min(20, len(query))]
-	for i := 0; i < len(upper); i++ {
-		if upper[i] != ' ' && upper[i] != '\t' && upper[i] != '\n' {
-			upper = upper[i:]
-			break
-		}
-	}
-	return hasPrefix(upper, "CREATE ") || hasPrefix(upper, "ALTER ") || hasPrefix(upper, "DROP ") || hasPrefix(upper, "TRUNCATE ") || hasPrefix(upper, "RENAME ")
-}
-
-func hasPrefix(s, prefix string) bool {
-	if len(s) < len(prefix) {
-		return false
-	}
-	return s[:len(prefix)] == prefix
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+	upper := strings.ToUpper(strings.TrimSpace(query))
+	return strings.HasPrefix(upper, "CREATE ") ||
+		strings.HasPrefix(upper, "ALTER ") ||
+		strings.HasPrefix(upper, "DROP ") ||
+		strings.HasPrefix(upper, "TRUNCATE ") ||
+		strings.HasPrefix(upper, "RENAME ")
 }
 
 func matchPattern(pattern, s string) bool {
