@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/UFOXD/datastream/internal/source"
+	"github.com/UFOXD/datastream/internal/schema"
 	"github.com/UFOXD/datastream/pkg/event"
 	"github.com/UFOXD/datastream/pkg/parser"
 	"github.com/go-mysql-org/go-mysql/mysql"
@@ -25,6 +26,7 @@ type BinlogSyncer struct {
 	streamer    *replication.BinlogStreamer
 	parser      parser.DDLParser
 	schemaCache *TableSchemaCache
+	tables      *schema.Tables // in-memory table definitions from SchemaHistory
 
 	// syncScope is the syncer's own deep copy of the scope.
 	// Protected by syncScopeMu so the binlog goroutine and Connector
@@ -55,11 +57,12 @@ type BinlogSyncer struct {
 // NewBinlogSyncer creates a new binlog syncer.
 // It stores a deep copy of syncScope so that mutations on the Connector's
 // copy (e.g. AddTables/RemoveTables) do not race with the binlog goroutine.
-func NewBinlogSyncer(config *Config, syncScope *source.SyncScope, schemaCache *TableSchemaCache, events chan *event.ChangeEvent, errors chan error) *BinlogSyncer {
+func NewBinlogSyncer(config *Config, syncScope *source.SyncScope, schemaCache *TableSchemaCache, tables *schema.Tables, events chan *event.ChangeEvent, errors chan error) *BinlogSyncer {
 	return &BinlogSyncer{
 		config:           config,
 		syncScope:        syncScope.Clone(),
 		schemaCache:      schemaCache,
+		tables:           tables,
 		events:           events,
 		errors:           errors,
 		tableColumnTypes: make(map[uint64][]byte),
@@ -320,8 +323,20 @@ func (s *BinlogSyncer) handleQueryEvent(ev *replication.BinlogEvent) error {
 	if ddlResult != nil && ddlResult.Table != "" {
 		s.schemaCache.Invalidate(ddlResult.Database, ddlResult.Table)
 	} else {
-		// Unknown table, invalidate all schemas in the database
 		s.schemaCache.InvalidateAll()
+	}
+
+	// Apply DDL to update in-memory Tables
+	if s.tables != nil && ddlResult != nil && ddlResult.Table != "" {
+		oldTable := s.tables.Get(ddlResult.Database, ddlResult.Table)
+		applyResult, err := s.parser.ApplyDDL(s.ctx, oldTable, query)
+		if err == nil && applyResult != nil {
+			if applyResult.NewTableInfo != nil {
+				s.tables.Put(applyResult.NewTableInfo)
+			} else if ddlResult.Type == parser.DDLTypeDropTable {
+				s.tables.Remove(ddlResult.Database, ddlResult.Table)
+			}
+		}
 	}
 
 	// Update position
@@ -356,16 +371,23 @@ func (s *BinlogSyncer) handleRowsEvent(ev *replication.BinlogEvent) error {
 		return nil
 	}
 
-	// Get table schema from cache
-	tableInfo, err := s.schemaCache.Get(s.ctx, database, table)
-	if err != nil {
-		log.Warn("failed to get table schema, using minimal info",
-			zap.String("database", database),
-			zap.String("table", table),
-			zap.Error(err))
-		tableInfo = &event.TableInfo{
-			Database: database,
-			Table:    table,
+	// Get table schema: prefer in-memory Tables (from SchemaHistory), fallback to schemaCache
+	var tableInfo *event.TableInfo
+	if s.tables != nil {
+		tableInfo = s.tables.Get(database, table)
+	}
+	if tableInfo == nil {
+		var err error
+		tableInfo, err = s.schemaCache.Get(s.ctx, database, table)
+		if err != nil {
+			log.Warn("failed to get table schema, using minimal info",
+				zap.String("database", database),
+				zap.String("table", table),
+				zap.Error(err))
+			tableInfo = &event.TableInfo{
+				Database: database,
+				Table:    table,
+			}
 		}
 	}
 

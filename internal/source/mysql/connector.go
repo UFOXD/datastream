@@ -9,9 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/UFOXD/datastream/pkg/event"
 	"github.com/UFOXD/datastream/internal/offset"
+	"github.com/UFOXD/datastream/internal/schema"
 	"github.com/UFOXD/datastream/internal/source"
+	"github.com/UFOXD/datastream/pkg/event"
 	"github.com/pingcap/log"
 	"go.uber.org/zap"
 )
@@ -33,6 +34,9 @@ type Connector struct {
 
 	// Schema cache for independent schema management
 	schemaCache *TableSchemaCache
+
+	// In-memory table definitions from SchemaHistory
+	tables *schema.Tables
 
 	// Database connection for schema queries
 	db *sql.DB
@@ -117,6 +121,9 @@ func (c *Connector) Initialize(ctx context.Context, config source.Config) error 
 	// Initialize schema cache with database connection
 	c.schemaCache = NewTableSchemaCache(db)
 
+	// Initialize in-memory Tables
+	c.tables = schema.NewTables()
+
 	// Initialize offset storage
 	if config.Offset.Backend != "" {
 		offsetCfg := &offset.Config{
@@ -176,7 +183,7 @@ func (c *Connector) Start(ctx context.Context) error {
 	log.Info("starting MySQL connector")
 
 	// Create binlog syncer (replaces canal.Canal)
-	c.syncer = NewBinlogSyncer(c.config, c.syncScope, c.schemaCache, c.events, c.errors)
+	c.syncer = NewBinlogSyncer(c.config, c.syncScope, c.schemaCache, c.tables, c.events, c.errors)
 
 	// Start the syncer
 	if err := c.syncer.Start(ctx, c.position); err != nil {
