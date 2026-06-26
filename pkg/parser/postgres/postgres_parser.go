@@ -226,3 +226,7 @@ func mergeEventColumn(existing event.ColumnInfo, change parser.ColumnInfo) event
 func (p *Parser) Name() string {
 	return "postgres"
 }
+
+func init() {
+	parser.Register("postgres", NewParser())
+}
