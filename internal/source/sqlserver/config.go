@@ -23,6 +23,9 @@ type Config struct {
 	// Tables
 	Schemas []string          `json:"schemas"`
 	Tables  map[string]string `json:"tables"` // schema -> pattern
+
+	// Data directory for local schema history
+	DataDir string `json:"dataDir,omitempty"`
 }
 
 // DefaultConfig returns the default SQL Server configuration.

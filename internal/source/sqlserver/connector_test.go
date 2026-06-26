@@ -4,7 +4,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/UFOXD/datastream/internal/schema"
 	"github.com/UFOXD/datastream/internal/source"
+	"github.com/UFOXD/datastream/pkg/event"
 )
 
 // Interface compliance check
@@ -101,5 +103,88 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if len(cfg.Schemas) != 1 || cfg.Schemas[0] != "dbo" {
 		t.Errorf("expected default schemas [dbo], got %v", cfg.Schemas)
+	}
+}
+
+func TestConnectorNewHasTables(t *testing.T) {
+	c := New()
+	if c.tables != nil {
+		t.Error("expected tables to be nil before Initialize")
+	}
+}
+
+func TestEnrichDMLTableInfo_PreferTables(t *testing.T) {
+	c := New()
+	c.tables = schema.NewTables()
+	c.schemaCache = nil // not needed for this test
+
+	// Put a table into Tables
+	c.tables.Put(&event.TableInfo{
+		Database: "mydb",
+		Table:    "users",
+		Columns: []event.ColumnInfo{
+			{Name: "id", Type: "INT"},
+			{Name: "name", Type: "NVARCHAR"},
+		},
+	})
+
+	ev := &event.ChangeEvent{
+		Table: event.TableInfo{
+			Database: "mydb",
+			Table:    "users",
+		},
+	}
+
+	c.enrichDMLTableInfo(ev)
+
+	if len(ev.Table.Columns) != 2 {
+		t.Errorf("expected 2 columns from Tables, got %d", len(ev.Table.Columns))
+	}
+	if ev.Table.Columns[0].Name != "id" {
+		t.Errorf("expected first column 'id', got %q", ev.Table.Columns[0].Name)
+	}
+}
+
+func TestEnrichDMLTableInfo_FallbackSchemaCache(t *testing.T) {
+	c := New()
+	c.tables = schema.NewTables()
+	// schemaCache is nil, so fallback will fail gracefully
+
+	ev := &event.ChangeEvent{
+		Table: event.TableInfo{
+			Database: "mydb",
+			Table:    "unknown",
+		},
+	}
+
+	// Should not panic even with nil schemaCache
+	c.enrichDMLTableInfo(ev)
+
+	// Table should remain unchanged since no Tables entry and no schemaCache
+	if ev.Table.Database != "mydb" {
+		t.Errorf("expected database 'mydb', got %q", ev.Table.Database)
+	}
+}
+
+func TestSchemas_ReturnsTablesData(t *testing.T) {
+	c := New()
+	c.tables = schema.NewTables()
+
+	c.tables.Put(&event.TableInfo{Database: "db1", Table: "t1"})
+	c.tables.Put(&event.TableInfo{Database: "db1", Table: "t2"})
+
+	schemas := c.Schemas()
+	if len(schemas) != 2 {
+		t.Errorf("expected 2 schemas, got %d", len(schemas))
+	}
+}
+
+func TestSchemas_NilTables(t *testing.T) {
+	c := New()
+	// tables is nil
+
+	schemas := c.Schemas()
+	if len(schemas) != 0 {
+		t.Errorf("expected 0 schemas, got %d", len(schemas))
 	}
 }
