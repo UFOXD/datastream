@@ -134,12 +134,127 @@ func (v *DDLVisitor) VisitAlter_table(ctx *generated.Alter_tableContext) interfa
 		}
 	}
 
-	// Process ALTER properties
+	// Process ALTER properties (physical attributes, etc.)
 	if properties := ctx.Alter_table_properties(); properties != nil {
 		v.processAlterProperties(properties.(*generated.Alter_table_propertiesContext), result.TableChanges)
 	}
 
+	// Process column clauses (ADD/DROP/MODIFY/RENAME COLUMN)
+	if columnClauses := ctx.Column_clauses(); columnClauses != nil {
+		v.processColumnClauses(columnClauses.(*generated.Column_clausesContext), result.TableChanges)
+	}
+
 	return result
+}
+
+// processColumnClauses handles ADD/DROP/MODIFY/RENAME COLUMN clauses.
+func (v *DDLVisitor) processColumnClauses(ctx *generated.Column_clausesContext, changes *parser.TableChanges) {
+	// Handle ADD/MODIFY/DROP column clauses
+	if addModDrop := ctx.Add_modify_drop_column_clauses(); addModDrop != nil {
+		amdCtx := addModDrop.(*generated.Add_modify_drop_column_clausesContext)
+
+		// Process ADD columns
+		for _, addClause := range amdCtx.AllAdd_column_clause() {
+			v.processAddColumn(addClause.(*generated.Add_column_clauseContext), changes)
+		}
+
+		// Process DROP columns
+		for _, dropClause := range amdCtx.AllDrop_column_clause() {
+			v.processDropColumn(dropClause.(*generated.Drop_column_clauseContext), changes)
+		}
+
+		// Process MODIFY columns
+		for _, modClause := range amdCtx.AllModify_column_clauses() {
+			v.processModifyColumn(modClause.(*generated.Modify_column_clausesContext), changes)
+		}
+	}
+
+	// Handle RENAME COLUMN
+	if renameClause := ctx.Rename_column_clause(); renameClause != nil {
+		renameCtx := renameClause.(*generated.Rename_column_clauseContext)
+		var oldName, newName string
+		if oldCol := renameCtx.Old_column_name(); oldCol != nil {
+			oldName = strings.Trim(oldCol.GetText(), "\"")
+		}
+		if newCol := renameCtx.New_column_name(); newCol != nil {
+			newName = strings.Trim(newCol.GetText(), "\"")
+		}
+		if oldName != "" && newName != "" {
+			changes.ModifiedColumns = append(changes.ModifiedColumns, parser.ColumnModification{
+				Old: parser.ColumnInfo{Name: oldName},
+				New: parser.ColumnInfo{Name: newName},
+			})
+		}
+	}
+}
+
+// processAddColumn extracts columns from an ADD COLUMN clause.
+func (v *DDLVisitor) processAddColumn(ctx *generated.Add_column_clauseContext, changes *parser.TableChanges) {
+	for _, colDef := range ctx.AllColumn_definition() {
+		col := v.extractColumnFromDefinition(colDef.(*generated.Column_definitionContext))
+		if col != nil {
+			changes.AddedColumns = append(changes.AddedColumns, *col)
+		}
+	}
+}
+
+// processDropColumn extracts column names from a DROP COLUMN clause.
+func (v *DDLVisitor) processDropColumn(ctx *generated.Drop_column_clauseContext, changes *parser.TableChanges) {
+	for _, colName := range ctx.AllColumn_name() {
+		name := strings.Trim(colName.GetText(), "\"")
+		if name != "" {
+			changes.DroppedColumns = append(changes.DroppedColumns, name)
+		}
+	}
+}
+
+// processModifyColumn extracts column info from a MODIFY COLUMN clause.
+func (v *DDLVisitor) processModifyColumn(ctx *generated.Modify_column_clausesContext, changes *parser.TableChanges) {
+	for _, modProps := range ctx.AllModify_col_properties() {
+		col := v.extractColumnFromModifyProps(modProps.(*generated.Modify_col_propertiesContext))
+		if col != nil {
+			changes.ModifiedColumns = append(changes.ModifiedColumns, parser.ColumnModification{
+				Old: parser.ColumnInfo{Name: col.Name},
+				New: *col,
+			})
+		}
+	}
+}
+
+// extractColumnFromDefinition extracts column name and type from a column_definition context.
+func (v *DDLVisitor) extractColumnFromDefinition(ctx *generated.Column_definitionContext) *parser.ColumnInfo {
+	if ctx == nil {
+		return nil
+	}
+	col := &parser.ColumnInfo{Nullable: true}
+	if colName := ctx.Column_name(); colName != nil {
+		col.Name = strings.Trim(colName.GetText(), "\"")
+	}
+	if datatype := ctx.Datatype(); datatype != nil {
+		col.Type = datatype.GetText()
+	}
+	if col.Name == "" {
+		return nil
+	}
+	return col
+}
+
+// extractColumnFromModifyProps extracts column name and type from modify_col_properties context.
+func (v *DDLVisitor) extractColumnFromModifyProps(ctx *generated.Modify_col_propertiesContext) *parser.ColumnInfo {
+	if ctx == nil {
+		return nil
+	}
+	col := &parser.ColumnInfo{Nullable: true}
+	if colName := ctx.Column_name(); colName != nil {
+		col.Name = strings.Trim(colName.GetText(), "\"")
+	}
+	if datatype := ctx.Datatype(); datatype != nil {
+		col.Type = datatype.GetText()
+	}
+	if col.Name == "" {
+		return nil
+	}
+	return col
 }
 
 func (v *DDLVisitor) processAlterProperties(ctx *generated.Alter_table_propertiesContext, changes *parser.TableChanges) {
