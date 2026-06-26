@@ -7,12 +7,16 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/UFOXD/datastream/internal/offset"
+	"github.com/UFOXD/datastream/internal/schema"
 	"github.com/UFOXD/datastream/internal/source"
+	"github.com/UFOXD/datastream/internal/store"
 	"github.com/UFOXD/datastream/pkg/event"
+	"github.com/UFOXD/datastream/pkg/parser"
 	"github.com/pingcap/log"
 	_ "github.com/sijms/go-ora/v2"
 	"go.uber.org/zap"
@@ -45,6 +49,18 @@ type Connector struct {
 
 	// Sync scope
 	syncScope *source.SyncScope
+
+	// In-memory table definitions from SchemaHistory
+	tables *schema.Tables
+
+	// Unified task metadata storage (positions, schema history)
+	store store.TargetStore
+
+	// Persistent schema history (backed by store)
+	history schema.SchemaHistory
+
+	// DDL parser for Oracle
+	ddlParser parser.DDLParser
 }
 
 // New creates a new Oracle source connector.
@@ -104,6 +120,43 @@ func (c *Connector) Initialize(ctx context.Context, config source.Config) error 
 	c.db = db
 	c.schemaCache = NewTableSchemaCache(db)
 
+	// Initialize in-memory Tables
+	c.tables = schema.NewTables()
+
+	// Determine task ID
+	taskID := config.Type
+	if taskID == "" {
+		taskID = "oracle"
+	}
+	c.taskID = taskID
+
+	// Initialize unified TargetStore (uses source DB; creates ds_{taskID} schema)
+	mysqlStore := store.NewMySQLStore(db, taskID)
+	if err := mysqlStore.InitDatabase(ctx); err != nil {
+		log.Warn("failed to init target store database, continuing without store",
+			zap.String("taskId", taskID),
+			zap.Error(err))
+	} else {
+		c.store = mysqlStore
+		c.history = schema.NewTargetStoreSchemaHistory(mysqlStore)
+
+		// Recover Tables from SchemaHistory
+		if err := c.history.Recover(ctx, c.tables, c.position); err != nil {
+			log.Warn("failed to recover schema history",
+				zap.Error(err))
+		} else {
+			log.Info("recovered tables from schema history",
+				zap.Int("count", c.tables.Count()))
+		}
+	}
+
+	// Initialize DDL parser from registry
+	if p := parser.DefaultRegistry.Get("oracle"); p != nil {
+		c.ddlParser = p
+	} else {
+		log.Warn("Oracle DDL parser not found in registry, DDL events will be passed as raw SQL")
+	}
+
 	// Initialize offset storage
 	if config.Offset.Backend != "" {
 		offsetCfg := &offset.Config{
@@ -116,7 +169,6 @@ func (c *Connector) Initialize(ctx context.Context, config source.Config) error 
 			return fmt.Errorf("failed to create offset storage: %w", err)
 		}
 		c.offsetStorage = storage
-		c.taskID = config.Type
 
 		if pos, err := storage.Load(ctx, c.taskID); err != nil {
 			log.Warn("failed to load position from offset storage",
@@ -141,7 +193,8 @@ func (c *Connector) Initialize(ctx context.Context, config source.Config) error 
 	log.Info("Oracle connector initialized",
 		zap.String("host", cfg.Host),
 		zap.Int("port", cfg.Port),
-		zap.String("serviceName", cfg.ServiceName))
+		zap.String("serviceName", cfg.ServiceName),
+		zap.Int("recoveredTables", c.tables.Count()))
 
 	return nil
 }
@@ -187,6 +240,16 @@ func (c *Connector) Stop(ctx context.Context) error {
 			log.Warn("failed to save final position to offset storage", zap.Error(err))
 		}
 		c.offsetStorage.Close()
+	}
+
+	// Close schema history
+	if c.history != nil {
+		c.history.Close()
+	}
+
+	// Close target store
+	if c.store != nil {
+		c.store.Close()
 	}
 
 	if c.db != nil {
@@ -338,6 +401,20 @@ func (c *Connector) pollChanges(ctx context.Context) {
 	}
 
 	for _, ev := range changes {
+		// Handle DDL events: parse, update Tables, save to SchemaHistory
+		if ev.Type == event.EventTypeDDL {
+			c.handleDDLEvent(ctx, ev)
+		}
+
+		// SaveCurrentPosition when event arrives
+		if c.store != nil {
+			if err := c.store.SaveCurrentPosition(ctx, &ev.Position); err != nil {
+				log.Warn("failed to save current position to store",
+					zap.Uint64("scn", ev.Position.SCN),
+					zap.Error(err))
+			}
+		}
+
 		select {
 		case c.events <- ev:
 		case <-c.stopCh:
@@ -365,6 +442,117 @@ func (c *Connector) pollChanges(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// handleDDLEvent processes a DDL event: parses it, updates Tables, and saves to SchemaHistory.
+func (c *Connector) handleDDLEvent(ctx context.Context, ev *event.ChangeEvent) {
+	ddl, ok := ev.Metadata["sql"]
+	if !ok || ddl == "" {
+		return
+	}
+
+	// Only process actual DDL statements (not DML that LogMiner may emit as opCode 5)
+	if !isDDLStatement(ddl) {
+		return
+	}
+
+	database := ev.Table.Database
+	tableName := ev.Table.Table
+
+	log.Info("DDL event detected",
+		zap.String("sql", ddl),
+		zap.String("database", database),
+		zap.String("table", tableName),
+		zap.Uint64("scn", ev.Position.SCN))
+
+	if c.ddlParser == nil {
+		log.Warn("no DDL parser available, skipping DDL processing")
+		return
+	}
+
+	// Get old table info from Tables (nil for new tables)
+	var oldTable *event.TableInfo
+	if c.tables != nil {
+		oldTable = c.tables.Get(database, tableName)
+	}
+
+	// Apply DDL via parser
+	applyResult, err := c.ddlParser.ApplyDDL(ctx, oldTable, ddl)
+	if err != nil {
+		log.Warn("failed to apply DDL",
+			zap.String("sql", ddl),
+			zap.Error(err))
+		return
+	}
+
+	// Update in-memory Tables
+	if c.tables != nil && applyResult != nil {
+		if applyResult.NewTableInfo != nil {
+			c.tables.Put(applyResult.NewTableInfo)
+			log.Info("updated table in Tables",
+				zap.String("database", database),
+				zap.String("table", tableName))
+		} else if applyResult.Type == parser.DDLTypeDropTable {
+			c.tables.Remove(database, tableName)
+			log.Info("removed table from Tables",
+				zap.String("database", database),
+				zap.String("table", tableName))
+		}
+	}
+
+	// Invalidate schema cache for affected table
+	if c.schemaCache != nil {
+		if tableName != "" {
+			c.schemaCache.Invalidate(database, tableName)
+		} else {
+			c.schemaCache.InvalidateAll()
+		}
+	}
+
+	// Save to SchemaHistory via store
+	if c.history != nil && applyResult != nil {
+		changeType := string(applyResult.Type)
+		if applyResult.NewTableInfo != nil {
+			// Determine if CREATE or ALTER
+			if oldTable != nil {
+				changeType = "ALTER"
+			} else {
+				changeType = "CREATE"
+			}
+		} else {
+			changeType = "DROP"
+		}
+
+		histRec := &event.SchemaHistoryRecord{
+			Position:   ev.Position,
+			Database:   database,
+			Table:      tableName,
+			DDL:        ddl,
+			TableInfo:  applyResult.NewTableInfo,
+			ChangeType: changeType,
+			DDLStatus:  event.DDLStatusCompleted,
+			Timestamp:  ev.Timestamp,
+		}
+		if applyResult.NewTableInfo != nil {
+			histRec.Schema = applyResult.NewTableInfo.Schema
+		}
+
+		if err := c.history.Record(ctx, histRec); err != nil {
+			log.Warn("failed to save schema history",
+				zap.String("sql", ddl),
+				zap.Error(err))
+		}
+	}
+}
+
+// isDDLStatement checks if a SQL statement is a DDL statement.
+func isDDLStatement(sql string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(sql))
+	return strings.HasPrefix(upper, "CREATE ") ||
+		strings.HasPrefix(upper, "ALTER ") ||
+		strings.HasPrefix(upper, "DROP ") ||
+		strings.HasPrefix(upper, "TRUNCATE ") ||
+		strings.HasPrefix(upper, "RENAME ")
 }
 
 func parseConfig(config source.Config) (*Config, error) {

@@ -211,3 +211,7 @@ func applyAlterChanges(table *event.TableInfo, changes *parser.TableChanges) {
 func (p *Parser) Name() string {
 	return "oracle"
 }
+
+func init() {
+	parser.Register("oracle", NewParser())
+}
