@@ -26,24 +26,24 @@ DataStream is a Go-based CDC (Change Data Capture) platform that refactors Debez
 
 详细设计文档：[`docs/design/schema-history-and-cache-integrity-design.md`](docs/design/schema-history-and-cache-integrity-design.md)
 
-| 编号 | 问题 | 说明 | 待决策 |
-|------|------|------|--------|
-| **B1** | 缓冲文件事务完整性 | 大事务跨多表文件写一半崩溃后重复。需要事务粒度原子性 | WAL 单文件 vs 分文件+committed_gtids |
-| **B2** | Schema History | 自维护表结构链，DDL 变更后存完整 TableInfo，重启 Recover | 存储后端 + 序列化格式未决 |
-| **B3** | Parser `ApplyDDL()` | Parser 拿旧表结构+DDL 产出新完整 TableInfo。MySQL CHANGE/AFTER/FIRST 未实现 | — |
-| **B4** | DDL 应用状态跟踪 | DDLRecord 跟踪 pending→applying→completed/failed，成功后才更新 Tables | 已设计，待实现 |
+| 编号 | 问题 | 状态 |
+|------|------|------|
+| **B1** | 缓冲文件事务完整性 — 按源分治 + CRC32 + fsync + ReadResult | ✅ 已完成 |
+| **B2** | Schema History — Tables 内存集合 + LocalSchemaHistory 单文件存储 + Recover | ✅ 已完成 |
+| **B3** | Parser ApplyDDL — MySQL 实现完成 + ALTER 增强 (CHANGE/AFTER/FIRST/类型) | ✅ MySQL 完成，**Oracle/PG/SQLServer 存根** |
+| **B4** | DDL 应用状态跟踪 — DDLRecordManager 状态机 | ✅ 已完成 |
 
 ### 📌 重要待办
 
-| 优先级 | 事项 | 设计文档 |
-|--------|------|---------|
-| P1 | S3 全量中转路径实现 | [`table-lifecycle-design.md`](docs/design/table-lifecycle-design.md) §5.3 |
-| P1 | TemporalConverter 时区 UTC 归一化 | [`oracle-dml-parser-design.md`](docs/design/oracle-dml-parser-design.md) §11 |
-| P1 | Oracle parser ALTER 重写（文本匹配→ANTLR） | [`schema-history-and-cache-integrity-design.md`](docs/design/schema-history-and-cache-integrity-design.md) §4.3 |
-| P1 | PG/SQLServer parser ALTER 增强 | 同上 |
+| 优先级 | 事项 | 说明 |
+|--------|------|------|
+| **P0** | **Oracle parser ApplyDDL 实现** | 当前是存根。Oracle 支持 RENAME COLUMN / 改列顺序，DDL 事件会 failed 导致表停在旧 schema。同构/异构都是卡点。设计文档 §4.3 |
+| **P0** | **PG parser ApplyDDL 实现** | 同上，PG 支持 ALTER COLUMN TYPE / RENAME COLUMN |
+| **P0** | **SQLServer parser ApplyDDL 实现** | 同上，SQLServer 支持 sp_rename / ALTER COLUMN |
+| P1 | S3 全量中转路径实现 | table-lifecycle-design.md §5.3 |
+| P1 | TemporalConverter 时区 UTC 归一化 | oracle-dml-parser-design.md §11 |
 | P2 | Source connector Schemas() 从 stub 改委托 | Reviewer 发现 S2 |
-| P2 | Source connector 测试覆盖率 15-24% → 60%+ | [`test-strategy-design.md`](docs/design/test-strategy-design.md) |
-| P2 | fsync 模式配置化 + CRC32 校验 + Read 错误传播 | 跟随 B1 一起做 |
+| P2 | Source connector 测试覆盖率 15-24% → 60%+ | test-strategy-design.md |
 | P2 | 废弃 schema_cache.go | 跟随 B2 完成后迁移删除 |
 
 ### ✅ 2026-05-23~24 完成的工作
