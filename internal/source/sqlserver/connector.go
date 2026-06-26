@@ -11,8 +11,11 @@ import (
 	"time"
 
 	"github.com/UFOXD/datastream/internal/offset"
+	"github.com/UFOXD/datastream/internal/schema"
 	"github.com/UFOXD/datastream/internal/source"
 	"github.com/UFOXD/datastream/pkg/event"
+	"github.com/UFOXD/datastream/pkg/parser"
+	sqlserverparser "github.com/UFOXD/datastream/pkg/parser/sqlserver"
 	"github.com/pingcap/log"
 	_ "github.com/microsoft/go-mssqldb"
 	"go.uber.org/zap"
@@ -39,12 +42,23 @@ type Connector struct {
 	// Schema cache
 	schemaCache *TableSchemaCache
 
+	// In-memory table definitions from SchemaHistory
+	tables *schema.Tables
+
+	// DDL parser and record manager
+	ddlParser      parser.DDLParser
+	ddlManager     *schema.DDLRecordManager
+	schemaHistory  schema.SchemaHistory
+
 	// Offset storage
 	offsetStorage offset.Storage
 	taskID        string
 
 	// Sync scope
 	syncScope *source.SyncScope
+
+	// DDL detection state
+	lastDDLCheckTime time.Time
 }
 
 // New creates a new SQL Server source connector.
@@ -104,6 +118,33 @@ func (c *Connector) Initialize(ctx context.Context, config source.Config) error 
 
 	c.db = db
 	c.schemaCache = NewTableSchemaCache(db)
+
+	// Initialize in-memory Tables and DDL management
+	c.tables = schema.NewTables()
+	c.ddlParser = sqlserverparser.NewParser()
+
+	// Initialize local schema history for DDL persistence
+	if cfg.DataDir != "" {
+		history, err := schema.NewLocalSchemaHistory(cfg.DataDir)
+		if err != nil {
+			log.Warn("failed to create local schema history, DDL recovery disabled",
+				zap.Error(err))
+		} else {
+			c.schemaHistory = history
+			c.ddlManager = schema.NewDDLRecordManager(c.tables, history)
+		}
+	}
+
+	// Recover tables from schema history (replay DDL records up to saved position)
+	if c.schemaHistory != nil {
+		if err := c.schemaHistory.Recover(ctx, c.tables, c.position); err != nil {
+			log.Warn("failed to recover schema history",
+				zap.Error(err))
+		} else {
+			log.Info("recovered tables from schema history",
+				zap.Int("tableCount", c.tables.Count()))
+		}
+	}
 
 	// Initialize offset storage
 	if config.Offset.Backend != "" {
@@ -233,6 +274,10 @@ func (c *Connector) Stop(ctx context.Context) error {
 		c.offsetStorage.Close()
 	}
 
+	if c.schemaHistory != nil {
+		c.schemaHistory.Close()
+	}
+
 	if c.db != nil {
 		c.db.Close()
 	}
@@ -296,8 +341,11 @@ func (c *Connector) GetSchema(database, table string) (*event.TableInfo, error) 
 	return c.schemaCache.Get(context.Background(), database, table)
 }
 
-// Schemas returns all cached table schemas.
+// Schemas returns all cached table schemas from in-memory Tables.
 func (c *Connector) Schemas() map[string]*event.TableInfo {
+	if c.tables != nil {
+		return c.tables.All()
+	}
 	return make(map[string]*event.TableInfo)
 }
 
@@ -375,6 +423,10 @@ func (c *Connector) runPollingLoop(ctx context.Context) {
 
 // pollAll reads changes from every CDC reader and emits events.
 func (c *Connector) pollAll(ctx context.Context) {
+	// Step 1: Detect and process DDL changes
+	c.detectDDLChanges(ctx)
+
+	// Step 2: Read CDC changes (DML)
 	var latestLSN string
 
 	for captureInstance, reader := range c.cdcReaders {
@@ -390,7 +442,9 @@ func (c *Connector) pollAll(ctx context.Context) {
 			continue
 		}
 
+		// Enrich DML events with table info from Tables (preferred) or schemaCache
 		for _, ev := range changes {
+			c.enrichDMLTableInfo(ev)
 			select {
 			case c.events <- ev:
 			case <-c.stopCh:
@@ -409,7 +463,7 @@ func (c *Connector) pollAll(ctx context.Context) {
 		}
 	}
 
-	// Update connector-level position
+	// Update connector-level position (ChangeLsn + SeqVal for SQL Server)
 	if latestLSN != "" {
 		c.mu.Lock()
 		c.position = &event.Position{
@@ -425,6 +479,149 @@ func (c *Connector) pollAll(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// enrichDMLTableInfo sets the event's Table field using Tables (preferred)
+// or schemaCache (fallback). This ensures DML events carry accurate schema info.
+func (c *Connector) enrichDMLTableInfo(ev *event.ChangeEvent) {
+	db := ev.Table.Database
+	tbl := ev.Table.Table
+
+	// Prefer in-memory Tables (populated from SchemaHistory)
+	if c.tables != nil {
+		if info := c.tables.Get(db, tbl); info != nil {
+			ev.Table = *info
+			return
+		}
+	}
+
+	// Fallback to schemaCache (live database queries)
+	if c.schemaCache != nil {
+		if info, err := c.schemaCache.Get(context.Background(), db, tbl); err == nil && info != nil {
+			ev.Table = *info
+		}
+	}
+}
+
+// detectDDLChanges checks for recent DDL activity and emits DDL events.
+func (c *Connector) detectDDLChanges(ctx context.Context) {
+	now := time.Now()
+	checkTime := c.lastDDLCheckTime
+	if checkTime.IsZero() {
+		// First check: look back 5 minutes
+		checkTime = now.Add(-5 * time.Minute)
+	}
+
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT s.name AS schema_name, o.name AS table_name, o.modify_date
+		FROM sys.objects o
+		JOIN sys.schemas s ON o.schema_id = s.schema_id
+		WHERE o.type = 'U'
+		  AND o.modify_date > @p1
+		ORDER BY o.modify_date
+	`, checkTime)
+	if err != nil {
+		log.Warn("failed to detect DDL changes", zap.Error(err))
+		c.lastDDLCheckTime = now
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var schemaName, tableName string
+		var modifyDate time.Time
+		if err := rows.Scan(&schemaName, &tableName, &modifyDate); err != nil {
+			log.Warn("failed to scan DDL change row", zap.Error(err))
+			continue
+		}
+
+		captureInstance := schemaName + "_" + tableName
+
+		// Check if we have a CDC reader for this table (means we're tracking it)
+		c.mu.RLock()
+		reader, tracked := c.cdcReaders[captureInstance]
+		c.mu.RUnlock()
+		if !tracked {
+			continue
+		}
+
+		// Get fresh schema from database
+		freshInfo, err := c.schemaCache.Get(ctx, c.config.Database, tableName)
+		if err != nil {
+			log.Warn("failed to get fresh schema for DDL",
+				zap.String("table", tableName),
+				zap.Error(err))
+			continue
+		}
+
+		// Invalidate schema cache so next DML gets fresh schema
+		c.schemaCache.Invalidate(c.config.Database, tableName)
+
+		// Build DDL event and update Tables
+		ddlPos := event.Position{
+			CommitTime: modifyDate,
+		}
+		if c.position != nil {
+			ddlPos.ChangeLsn = c.position.ChangeLsn
+		}
+		if reader.GetPosition() != nil {
+			ddlPos.ChangeLsn = reader.GetPosition().StartLSN
+		}
+
+		// Apply DDL to update in-memory Tables
+		if c.tables != nil {
+			// Detect change type
+			changeType := "ALTER"
+			if c.tables.Get(c.config.Database, tableName) == nil {
+				changeType = "CREATE"
+			}
+			c.tables.Put(freshInfo)
+
+			// Write schema history via DDLRecordManager
+			if c.ddlManager != nil {
+				recID := fmt.Sprintf("ddl_%s_%s_%d", c.config.Database, tableName, modifyDate.UnixNano())
+				ddlRecord := &event.DDLRecord{
+					ID:           recID,
+					Position:     &ddlPos,
+					Database:     c.config.Database,
+					Table:        tableName,
+					DDL:          fmt.Sprintf("-- %s detected via sys.objects", changeType),
+					NewTableInfo: freshInfo,
+				}
+				if err := c.ddlManager.Create(ctx, ddlRecord); err == nil {
+					_ = c.ddlManager.MarkApplying(ctx, recID)
+					_ = c.ddlManager.MarkCompleted(ctx, recID)
+				}
+			}
+		}
+
+		// Emit DDL event
+		ddlEvent := &event.ChangeEvent{
+			ID:   event.GenerateEventID(&event.SourceInfo{Connector: "sqlserver"}, modifyDate, 0),
+			Type: event.EventTypeDDL,
+			Source: event.SourceInfo{
+				Connector: "sqlserver",
+				Database:  c.config.Database,
+			},
+			Table:     *freshInfo,
+			Timestamp: modifyDate,
+			Position:  ddlPos,
+			Metadata: map[string]string{
+				"ddl":     fmt.Sprintf("-- %s detected via sys.objects", captureInstance),
+				"ddlType": "alter_table",
+			},
+		}
+
+		select {
+		case c.events <- ddlEvent:
+		case <-c.stopCh:
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+
+	c.lastDDLCheckTime = now
 }
 
 // shouldCapture checks if a table should be captured based on configured schemas.
@@ -476,6 +673,9 @@ func parseConfig(config source.Config) (*Config, error) {
 	}
 	if v, ok := config.Properties["batchSize"].(float64); ok {
 		cfg.BatchSize = int(v)
+	}
+	if v, ok := config.Properties["dataDir"].(string); ok {
+		cfg.DataDir = v
 	}
 
 	// Collect schemas from table filters
