@@ -12,6 +12,7 @@ import (
 	"github.com/UFOXD/datastream/internal/offset"
 	"github.com/UFOXD/datastream/internal/schema"
 	"github.com/UFOXD/datastream/internal/source"
+	"github.com/UFOXD/datastream/internal/store"
 	"github.com/UFOXD/datastream/pkg/event"
 	"github.com/pingcap/log"
 	"go.uber.org/zap"
@@ -47,6 +48,9 @@ type Connector struct {
 	// Offset storage
 	offsetStorage offset.Storage
 	taskID        string
+
+	// Target store for unified task metadata persistence
+	store store.TargetStore
 
 	// Sync scope
 	syncScope *source.SyncScope
@@ -152,6 +156,38 @@ func (c *Connector) Initialize(ctx context.Context, config source.Config) error 
 		}
 	}
 
+	// Initialize TargetStore if target DSN is configured
+	if targetDSN, ok := config.Properties["targetDSN"].(string); ok && targetDSN != "" {
+		taskID := c.taskID
+		if tid, ok := config.Properties["taskId"].(string); ok && tid != "" {
+			taskID = tid
+		}
+		if taskID == "" {
+			taskID = "default"
+		}
+
+		targetDB, err := sql.Open("mysql", targetDSN)
+		if err != nil {
+			db.Close()
+			return fmt.Errorf("failed to open target database: %w", err)
+		}
+		if err := targetDB.PingContext(ctx); err != nil {
+			targetDB.Close()
+			db.Close()
+			return fmt.Errorf("failed to connect to target database: %w", err)
+		}
+
+		mysqlStore := store.NewMySQLStore(targetDB, taskID)
+		if err := mysqlStore.InitDatabase(ctx); err != nil {
+			targetDB.Close()
+			db.Close()
+			return fmt.Errorf("failed to init target store: %w", err)
+		}
+		c.store = mysqlStore
+		log.Info("target store initialized",
+			zap.String("taskId", taskID))
+	}
+
 	// Set initial binlog file if configured
 	if cfg.BinlogFile != "" {
 		c.currentBinlog = cfg.BinlogFile
@@ -182,8 +218,13 @@ func (c *Connector) Start(ctx context.Context) error {
 
 	log.Info("starting MySQL connector")
 
+	// Recover state from TargetStore if available
+	if c.store != nil {
+		c.recoverFromStore(ctx)
+	}
+
 	// Create binlog syncer (replaces canal.Canal)
-	c.syncer = NewBinlogSyncer(c.config, c.syncScope, c.schemaCache, c.tables, c.events, c.errors)
+	c.syncer = NewBinlogSyncer(c.config, c.syncScope, c.schemaCache, c.tables, c.store, c.events, c.errors)
 
 	// Start the syncer
 	if err := c.syncer.Start(ctx, c.position); err != nil {
@@ -232,6 +273,11 @@ func (c *Connector) Stop(ctx context.Context) error {
 	// Close offset storage
 	if c.offsetStorage != nil {
 		c.offsetStorage.Close()
+	}
+
+	// Close target store
+	if c.store != nil {
+		c.store.Close()
 	}
 
 	// Close database connection
@@ -407,7 +453,7 @@ func (c *Connector) shouldCapture(database, table string) bool {
 	return false
 }
 
-// runPositionSaver periodically saves position to offset storage.
+// runPositionSaver periodically saves position to offset storage and TargetStore.
 func (c *Connector) runPositionSaver(ctx context.Context) {
 	defer c.wg.Done()
 
@@ -421,17 +467,89 @@ func (c *Connector) runPositionSaver(ctx context.Context) {
 		case <-c.stopCh:
 			return
 		case <-ticker.C:
-			if c.offsetStorage != nil && c.syncer != nil {
+			if c.syncer != nil {
 				pos := c.syncer.GetPosition()
 				if pos != nil {
 					c.mu.Lock()
 					c.position = pos
 					c.mu.Unlock()
-					if err := c.offsetStorage.Save(ctx, c.taskID, pos); err != nil {
-						log.Warn("failed to save position to offset storage", zap.Error(err))
+
+					if c.offsetStorage != nil {
+						if err := c.offsetStorage.Save(ctx, c.taskID, pos); err != nil {
+							log.Warn("failed to save position to offset storage", zap.Error(err))
+						}
+					}
+					if c.store != nil {
+						if err := c.store.SaveCurrentPosition(ctx, pos); err != nil {
+							log.Warn("failed to save current position to target store", zap.Error(err))
+						}
 					}
 				}
 			}
+		}
+	}
+}
+
+// recoverFromStore recovers connector state from the TargetStore.
+// It loads positions, table lifecycles, schema history, and pending DDL states.
+func (c *Connector) recoverFromStore(ctx context.Context) {
+	// 1. Load positions
+	flushed, _, err := c.store.LoadPositions(ctx)
+	if err != nil {
+		log.Warn("failed to load positions from target store", zap.Error(err))
+	} else if flushed != nil {
+		c.position = flushed
+		c.currentBinlog = flushed.BinlogFile
+		log.Info("recovered position from target store",
+			zap.String("binlogFile", flushed.BinlogFile),
+			zap.Uint32("binlogPos", flushed.BinlogPos))
+	}
+
+	// 2. Load table lifecycles (log for observability; actual recovery is task-level)
+	lifecycles, err := c.store.LoadTableLifecycles(ctx)
+	if err != nil {
+		log.Warn("failed to load table lifecycles from target store", zap.Error(err))
+	} else if len(lifecycles) > 0 {
+		log.Info("recovered table lifecycles from target store",
+			zap.Int("count", len(lifecycles)))
+	}
+
+	// 3. Replay schema history into in-memory Tables
+	history, err := c.store.LoadSchemaHistory(ctx)
+	if err != nil {
+		log.Warn("failed to load schema history from target store", zap.Error(err))
+	} else {
+		for _, rec := range history {
+			if rec.TableInfo != nil {
+				c.tables.Put(rec.TableInfo)
+			} else if rec.ChangeType == "DROP" {
+				c.tables.Remove(rec.DBName, rec.TableName)
+			}
+		}
+		if len(history) > 0 {
+			log.Info("replayed schema history from target store",
+				zap.Int("entries", len(history)),
+				zap.Int("tablesLoaded", c.tables.Count()))
+		}
+	}
+
+	// 4. Load pending DDL states and mark as failed (will be retried on next DDL)
+	pendingDDLs, err := c.store.LoadPendingDDLStates(ctx)
+	if err != nil {
+		log.Warn("failed to load pending DDL states from target store", zap.Error(err))
+	} else if len(pendingDDLs) > 0 {
+		log.Warn("found pending DDL states from previous run, marking as failed",
+			zap.Int("count", len(pendingDDLs)))
+		for _, ddl := range pendingDDLs {
+			_ = c.store.SaveDDLState(ctx, &store.DDLStateRow{
+				DBName:          ddl.DBName,
+				TableName:       ddl.TableName,
+				DDL:             ddl.DDL,
+				LastSuccessInfo: ddl.LastSuccessInfo,
+				Status:          "failed",
+				ErrorMsg:        "interrupted by restart",
+				RetryCount:      ddl.RetryCount + 1,
+			})
 		}
 	}
 }

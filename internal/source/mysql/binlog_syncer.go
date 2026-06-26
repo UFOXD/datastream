@@ -10,6 +10,7 @@ import (
 
 	"github.com/UFOXD/datastream/internal/source"
 	"github.com/UFOXD/datastream/internal/schema"
+	"github.com/UFOXD/datastream/internal/store"
 	"github.com/UFOXD/datastream/pkg/event"
 	"github.com/UFOXD/datastream/pkg/parser"
 	"github.com/go-mysql-org/go-mysql/mysql"
@@ -26,7 +27,8 @@ type BinlogSyncer struct {
 	streamer    *replication.BinlogStreamer
 	parser      parser.DDLParser
 	schemaCache *TableSchemaCache
-	tables      *schema.Tables // in-memory table definitions from SchemaHistory
+	tables      *schema.Tables    // in-memory table definitions from SchemaHistory
+	store       store.TargetStore // unified task metadata storage (may be nil)
 
 	// syncScope is the syncer's own deep copy of the scope.
 	// Protected by syncScopeMu so the binlog goroutine and Connector
@@ -57,12 +59,13 @@ type BinlogSyncer struct {
 // NewBinlogSyncer creates a new binlog syncer.
 // It stores a deep copy of syncScope so that mutations on the Connector's
 // copy (e.g. AddTables/RemoveTables) do not race with the binlog goroutine.
-func NewBinlogSyncer(config *Config, syncScope *source.SyncScope, schemaCache *TableSchemaCache, tables *schema.Tables, events chan *event.ChangeEvent, errors chan error) *BinlogSyncer {
+func NewBinlogSyncer(config *Config, syncScope *source.SyncScope, schemaCache *TableSchemaCache, tables *schema.Tables, targetStore store.TargetStore, events chan *event.ChangeEvent, errors chan error) *BinlogSyncer {
 	return &BinlogSyncer{
 		config:           config,
 		syncScope:        syncScope.Clone(),
 		schemaCache:      schemaCache,
 		tables:           tables,
+		store:            targetStore,
 		events:           events,
 		errors:           errors,
 		tableColumnTypes: make(map[uint64][]byte),
@@ -336,6 +339,27 @@ func (s *BinlogSyncer) handleQueryEvent(ev *replication.BinlogEvent) error {
 			} else if ddlResult.Type == parser.DDLTypeDropTable {
 				s.tables.Remove(ddlResult.Database, ddlResult.Table)
 			}
+
+			// Save schema history to TargetStore
+			if s.store != nil {
+				changeType := string(ddlResult.Type)
+				var ti *event.TableInfo
+				if applyResult.NewTableInfo != nil {
+					ti = applyResult.NewTableInfo
+				}
+				if err := s.store.SaveSchemaHistory(s.ctx, &store.SchemaHistoryRow{
+					Position:   changeEvent.Position,
+					DBName:     ddlResult.Database,
+					TableName:  ddlResult.Table,
+					DDL:        query,
+					TableInfo:  ti,
+					ChangeType: changeType,
+				}); err != nil {
+					log.Warn("failed to save schema history to target store",
+						zap.String("query", query),
+						zap.Error(err))
+				}
+			}
 		}
 	}
 
@@ -351,6 +375,13 @@ func (s *BinlogSyncer) handleQueryEvent(ev *replication.BinlogEvent) error {
 		return s.ctx.Err()
 	case <-time.After(5 * time.Second):
 		return fmt.Errorf("timeout sending DDL event")
+	}
+
+	// Save current position to TargetStore after DDL event
+	if s.store != nil {
+		if err := s.store.SaveCurrentPosition(s.ctx, &changeEvent.Position); err != nil {
+			log.Warn("failed to save current position to target store after DDL", zap.Error(err))
+		}
 	}
 
 	return nil
@@ -426,6 +457,14 @@ func (s *BinlogSyncer) handleRowsEvent(ev *replication.BinlogEvent) error {
 			return s.ctx.Err()
 		case <-time.After(5 * time.Second):
 			return fmt.Errorf("timeout sending change event")
+		}
+	}
+
+	// Save current position to TargetStore after all rows in this event are sent
+	if s.store != nil && len(events) > 0 {
+		lastPos := &events[len(events)-1].Position
+		if err := s.store.SaveCurrentPosition(s.ctx, lastPos); err != nil {
+			log.Warn("failed to save current position to target store", zap.Error(err))
 		}
 	}
 
