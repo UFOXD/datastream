@@ -1110,7 +1110,7 @@ Parser.ApplyDDL(oldTable{Columns:[a,b,c]}, "ALTER TABLE t MODIFY b INT FIRST")
 | 编号 | 事项 | 决策 | 状态 |
 |------|------|------|------|
 | D1 | 缓冲事务完整性方案 | **按源分治**：保持按表分文件 + 事务标记 truncate（MySQL GTID）/ 精确 position skip（其他源） | **已决** |
-| D2 | Schema History 存储后端 | **单文件顺序追加**（DDL 频率低，实现简单，无需处理跨表文件管理） | **已决** |
+| D2 | Schema History 存储后端 | **存目标库**：在目标端创建 `ds_{task_id}` 库，建 schema_history 表存储。不在本地落文件。 | **已决** |
 | D3 | History 序列化格式 | **Protobuf**（紧凑存储，配套 proto→json 转换工具供调试查看） | **已决** |
 | D4 | catching_up UPSERT 安全窗口 | **降级为可选（默认关闭）**，因为事务完整性保证后无重叠区 | **已决** |
 | D5 | DDL 失败后的恢复策略 | 表进 error 等人工介入（retry DDL / skip + 手动同步 schema） | **已决** |

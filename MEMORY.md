@@ -1,6 +1,6 @@
 # DataStream Project Memory
 
-> Last Updated: 2026-05-26
+> Last Updated: 2026-06-26
 
 ## Project Overview
 
@@ -8,45 +8,60 @@ DataStream is a Go-based CDC (Change Data Capture) platform that refactors Debez
 
 ## Current Status
 
-**Phase:** Phase 11 — 表级独立生命周期 + Reviewer 修复
 **Branch:** `main`
 **Build Status:** PASSING
-**Test Status:** ALL PASSING (43 packages)
-**Total Commits:** 134
-**Source Files:** 153 (不含生成代码和测试)
-**Overall Completion:** 核心功能完成，表级生命周期代码已实现，Schema History + 缓冲完整性阻塞中
-
-**Last Updated:** 2026-05-26
+**Test Status:** ALL PASSING (40+ packages)
+**Total Commits:** 170+
+**Changelog:** Detailed in [`docs/superpowers/specs/2026-06-26-integration-design.md`](docs/superpowers/specs/2026-06-26-integration-design.md)
 
 ---
 
-## 📋 当前卡点与待办
+## 已完成的组件
 
-### ⛔ 阻塞项（必须解决才能上线）
+### 核心存储层
+- ✅ B1: 缓冲文件事务完整性（按源分治 + CRC32 + fsync + ReadResult）
+- ✅ TargetStore: 统一存储层（目标库 ds_{task_id} 5 张表）
+- ✅ DDL 同步阻塞 + Flush 机制
 
-详细设计文档：[`docs/design/schema-history-and-cache-integrity-design.md`](docs/design/schema-history-and-cache-integrity-design.md)
+### Parser ApplyDDL
+- ✅ MySQL: CHANGE/AFTER/FIRST/完整类型/Nullable/Default
+- ✅ Oracle: ALTER ADD/DROP/MODIFY/RENAME COLUMN
+- ✅ PostgreSQL: ALTER ADD/DROP/RENAME/TYPE/SET NOT NULL/DEFAULT
+- ✅ SQL Server: ALTER ADD/DROP/ALTER COLUMN
+- ✅ Noop: MongoDB 不需要
 
-| 编号 | 问题 | 状态 |
-|------|------|------|
-| **B1** | 缓冲文件事务完整性 — 按源分治 + CRC32 + fsync + ReadResult | ✅ 已完成 |
-| **B2** | Schema History — Tables 内存集合 + LocalSchemaHistory 单文件存储 + Recover | ✅ 已完成 |
-| **B3** | Parser ApplyDDL — MySQL 实现完成 + ALTER 增强 (CHANGE/AFTER/FIRST/类型) | ✅ MySQL 完成，**Oracle/PG/SQLServer 存根** |
-| **B4** | DDL 应用状态跟踪 — DDLRecordManager 状态机 | ✅ 已完成 |
+### Connector 集成
+- ✅ MySQL: Tables + TargetStore + SchemaHistory Recover
+- ✅ MariaDB: 复用 MySQL BinlogSyncer + 自有 GTID 格式
+- ✅ PostgreSQL: pgoutput_handler DDL 检测 + StoreSchemaHistory
+- ✅ Oracle: handleDDLEvent + TargetStoreSchemaHistory 适配器
+- ✅ SQL Server: sys.objects DDL 检测 + LocalSchemaHistory
+- ✅ MongoDB: schema-free，只接入 Position 存储
 
-### 📌 重要待办
+### Schema History
+- ✅ Tables 内存集合（Put/Get/Remove/All/Count）
+- ✅ DDLRecordManager 状态机（pending→applying→completed/failed/skipped）
+- ✅ SchemaHistory → Tables Recover 启动恢复
+- ✅ DDL 状态持久化 + 崩溃重试
 
-| 优先级 | 事项 | 说明 |
-|--------|------|------|
-| **P0** | **Oracle parser ApplyDDL 实现** | 当前是存根。Oracle 支持 RENAME COLUMN / 改列顺序，DDL 事件会 failed 导致表停在旧 schema。同构/异构都是卡点。设计文档 §4.3 |
-| **P0** | **PG parser ApplyDDL 实现** | 同上，PG 支持 ALTER COLUMN TYPE / RENAME COLUMN |
-| **P0** | **SQLServer parser ApplyDDL 实现** | 同上，SQLServer 支持 sp_rename / ALTER COLUMN |
-| P1 | S3 全量中转路径实现 | table-lifecycle-design.md §5.3 |
-| P1 | TemporalConverter 时区 UTC 归一化 | oracle-dml-parser-design.md §11 |
-| P2 | Source connector Schemas() 从 stub 改委托 | Reviewer 发现 S2 |
-| P2 | Source connector 测试覆盖率 15-24% → 60%+ | test-strategy-design.md |
-| P2 | 废弃 schema_cache.go | 跟随 B2 完成后迁移删除 |
+---
 
-### ✅ 2026-05-23~24 完成的工作
+## 📋 待办
+
+### P0 — 无阻塞项
+所有 B1-B4 全部完成，所有 connector 集成完成，DDL 链路串通。
+
+### P1
+| 事项 | 说明 | 设计文档 |
+|------|------|---------|
+| S3 全量中转路径 | 大表 snapshot 本地磁盘不够用 | table-lifecycle-design.md §5.3 |
+| 时区 UTC 归一化 | Oracle TemporalConverter | oracle-dml-parser-design.md §11 |
+
+### P2
+| 事项 | 说明 |
+|------|------|
+| 测试覆盖率 15-24% → 60%+ | 持续改进 |
+| 废弃 schema_cache.go | 确认所有 path 切到 Tables 后删除 |
 
 | 分类 | 工作 | Commits |
 |------|------|---------|
