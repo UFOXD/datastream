@@ -19,7 +19,19 @@ type Config struct {
 	Log         logutil.LogConfig `toml:"log" json:"log"`
 	Coordinator CoordinatorConfig `toml:"coordinator" json:"coordinator"`
 	Security    SecurityConfig    `toml:"security" json:"security"`
+	Pipeline    PipelineConfig    `toml:"pipeline" json:"pipeline"`
 	Metrics     MetricsConfig     `toml:"metrics" json:"metrics"`
+}
+
+// PipelineConfig holds pipeline-level configuration.
+type PipelineConfig struct {
+	Cache CacheConfig `toml:"cache" json:"cache"`
+}
+
+// CacheConfig holds binlog cache configuration.
+type CacheConfig struct {
+	MaxSize string `toml:"max-size" json:"max-size"` // e.g. "80%", "100GB", "500MB"
+	Sync    string `toml:"sync" json:"sync"`          // "none", "batch", "every"
 }
 
 // MetricsConfig configures Prometheus metric collection.
@@ -147,6 +159,14 @@ func (c *Config) Adjust() {
 		c.Coordinator.Etcd.DialTimeout = 5
 	}
 
+	// Pipeline defaults
+	if c.Pipeline.Cache.MaxSize == "" {
+		c.Pipeline.Cache.MaxSize = "80%"
+	}
+	if c.Pipeline.Cache.Sync == "" {
+		c.Pipeline.Cache.Sync = "batch"
+	}
+
 	// Cluster + metrics defaults
 	if c.Cluster == "" {
 		c.Cluster = "default"
@@ -253,6 +273,10 @@ func (c *Config) LoadFromEnv() error {
 			c.Coordinator.Backend = val
 		case "coordinator_endpoints":
 			c.Coordinator.Endpoints = strings.Split(val, ",")
+		case "pipeline_cache_max_size":
+			c.Pipeline.Cache.MaxSize = val
+		case "pipeline_cache_sync":
+			c.Pipeline.Cache.Sync = val
 		}
 	}
 

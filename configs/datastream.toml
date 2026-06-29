@@ -26,3 +26,7 @@ output = "stdout"  # stdout or file path
 [pipeline]
 batch-size = 1000
 parallelism = 4
+
+[pipeline.cache]
+max-size = "80%"        # 缓存大小上限：百分比或固定值，如 "100GB", "500MB"
+sync = "batch"          # fsync 策略：none (OS管控) / batch (每批fsync) / every (每条事件fsync)
