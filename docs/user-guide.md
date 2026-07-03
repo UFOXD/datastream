@@ -105,6 +105,20 @@ tls-cert     = "/etc/datastream/cert.pem"
 tls-key      = "/etc/datastream/key.pem"
 ```
 
+### 管道缓存（2026-06-29 新增）
+
+```toml
+[pipeline.cache]
+max-size = "80%"      # binlog 缓存磁盘占用上限：百分比或固定值，如 "100GB", "500MB"
+sync     = "batch"    # fsync 策略：none（交给 OS）/ batch（每批 fsync）/ every（每条事件 fsync）
+```
+
+⚠️ 注意与下方 `[log] max-size` 区分：此项控制 `internal/cache`（binlog 缓存）的**磁盘占用上限**，
+单位可以是百分比或绝对大小；`[log] max-size` 控制的是**日志单文件轮转大小**，单位固定为 MB，
+两者互不影响，命名相同纯属巧合。
+
+环境变量覆盖：`DATASTREAM_PIPELINE_CACHE_MAX_SIZE` / `DATASTREAM_PIPELINE_CACHE_SYNC`
+
 ### 日志
 
 ```toml

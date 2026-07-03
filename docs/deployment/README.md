@@ -318,6 +318,10 @@ dial-timeout = 5
 username = ""
 password = ""
 
+[pipeline.cache]
+max-size = "80%"        # percentage of disk, or fixed size e.g. "100GB"
+sync = "batch"          # none | batch | every — see Configuration below
+
 [security]
 insecure = true
 # For TLS:
@@ -421,13 +425,34 @@ datastream --config node3.toml
 
 Each node should have unique `advertise-addr` but same etcd endpoints.
 
-### Leadership Election
+### Task-Level Leader Election
 
-The coordinator uses etcd for leader election. Only the leader processes tasks; followers standby.
+Unlike a single-leader model, `ClusterManager` (`internal/pipeline/cluster.go`)
+elects a **leader per task**, not one leader for the whole cluster. Any node
+can be the leader for one task and a follower for another — task ownership
+is distributed across all alive nodes via `pickLeastLoaded`, not
+concentrated on a single elected node.
+
+Timing parameters (fixed, not yet configurable):
+
+| Parameter | Value | Purpose |
+|---|---|---|
+| `NodeHeartbeatInterval` | 10s | How often a node reports liveness |
+| `NodeExpiryThreshold` | 30s | No heartbeat past this → node considered dead |
+| `RebalanceInterval` | 30s | How often the elected cluster leader scans for unassigned tasks |
+| `MaxTasksPerNode` | 10 | Soft cap used by `pickLeastLoaded` |
 
 ### Failover
 
-If the leader fails, etcd elects a new leader automatically within 5-15 seconds.
+If a node misses heartbeats past `NodeExpiryThreshold` (30s), the cluster
+leader's `rebalanceCluster` loop (runs every `RebalanceInterval`) detects it
+and reassigns its tasks to the least-loaded alive node.
+
+⚠️ **Known limitation**: the logic that determines whether a task is
+already owned by a live node (`cluster.go:265-275`) is incomplete — the
+computed `leaderKey` is discarded (`_ = leaderKey`) instead of being used to
+check current ownership. Treat automatic failover as unverified until this
+is fixed; see `MEMORY.md` for tracking.
 
 ## Operations
 

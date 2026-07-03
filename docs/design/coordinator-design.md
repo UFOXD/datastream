@@ -2,7 +2,7 @@
 
 ## 概述
 
-Coordinator Layer 是 DataStream 的集群协调层，负责节点管理、任务调度、故障转移和协调后端交互。该层确保在单节点或多节点模式下，任务能够正确分配、执行和恢复。
+Coordinator Layer 是 DataStream 的集群协调层，负责节点管理、任务位点持久化、Leader 选举和故障转移。该层确保在单节点或多节点模式下，任务能够正确分配、执行和恢复。
 
 ---
 
@@ -10,38 +10,44 @@ Coordinator Layer 是 DataStream 的集群协调层，负责节点管理、任�
 
 | 职责 | 说明 |
 |------|------|
-| 节点管理 | 节点注册、心跳检测、节点状态维护 |
-| 任务调度 | 任务分配、负载均衡、任务迁移 |
-| 故障转移 | 故障检测、任务重新分配、进度恢复 |
-| 协调后端 | 与 etcd/Consul 等协调系统交互 |
-| 锁服务 | 分布式锁，防止任务重复执行 |
+| 任务持久化 | 任务/位点的增删查改，落地到协调后端 |
+| 节点管理 | 节点注册/注销、心跳、存活列表 |
+| Leader 选举 | 任务级 leader election（每个 task 独立选主，非集群单一 leader） |
+| 故障转移 | 死节点探测、未分配任务重新分配（负载均衡） |
 
 ---
 
 ## 架构设计
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Coordinator Layer                           │
-│                                                                   │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌────────────────┐ │
-│  │   Node Manager   │  │  Task Scheduler  │  │  Failover      │ │
-│  │                  │  │                  │  │  Handler       │ │
-│  │  - 注册/注销      │  │  - 任务分配      │  │  - 故障检测    │ │
-│  │  - 心跳检测      │  │  - 负载均衡      │  │  - 任务迁移    │ │
-│  │  - 状态维护      │  │  - 任务迁移      │  │  - 进度恢复    │ │
-│  └──────────────────┘  └──────────────────┘  └────────────────┘ │
-│                                                                   │
-│  ┌─────────────────────────────────────────────────────────────┐ │
-│  │                   Coordination Backend                       │ │
-│  │                                                               │ │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │ │
-│  │  │    etcd     │  │   Consul    │  │   Memory (单节点)   │  │ │
-│  │  │  (推荐)     │  │             │  │                     │  │ │
-│  │  └─────────────┘  └─────────────┘  └─────────────────────┘  │ │
-│  └─────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│                  internal/pipeline                          │
+│                                                               │
+│  ┌───────────────────────┐    ┌───────────────────────────┐ │
+│  │   Coordinator (接口)   │    │      ClusterManager        │ │
+│  │                        │◄───│  - 心跳循环 (10s)           │ │
+│  │  Save/Get/List Task    │    │  - leader 循环（抢集群锁）  │ │
+│  │  Save/Get Position     │    │  - rebalanceCluster (30s)  │ │
+│  │  Acquire/Release/IsLeader │  │  - pickLeastLoaded         │ │
+│  │  Register/Unregister/  │    │  - acquireTask              │ │
+│  │  ListNodes/Heartbeat   │    │  - WatchLeadership          │ │
+│  └───────────┬────────────┘    └─────────────────────────────┘ │
+│              │                                                  │
+└──────────────┼──────────────────────────────────────────────────┘
+               │ 实现
+     ┌─────────┴──────────┐
+     │                    │
+┌────▼─────┐      ┌───────▼────────┐
+│ Memory-  │      │ Etcd-          │
+│Coordinator│      │Coordinator     │
+│(单节点)  │      │(internal/       │
+│          │      │coordinator/etcd)│
+└──────────┘      └────────────────┘
 ```
+
+`ClusterManager` 不是 Coordinator 的实现，而是 Coordinator 的**使用方**——它通过 Coordinator
+接口驱动心跳、选主和 rebalance；具体的存储/选举机制由注入的 `MemoryCoordinator` 或
+`EtcdCoordinator` 决定。
 
 ---
 
@@ -49,849 +55,265 @@ Coordinator Layer 是 DataStream 的集群协调层，负责节点管理、任�
 
 ### Coordinator 接口
 
+单一扁平接口，没有 `NodeManager`/`TaskScheduler`/`Locker` 的子接口拆分（`internal/pipeline/coordinator.go`）：
+
 ```go
-package coordinator
+package pipeline
 
 import (
     "context"
-    "time"
+
+    "github.com/UFOXD/datastream/pkg/event"
 )
 
-// Coordinator 协调器主接口
+// Coordinator coordinates tasks across multiple nodes.
 type Coordinator interface {
-    // 启动协调器
-    Start(ctx context.Context) error
+    Initialize(ctx context.Context) error
+    Close() error
 
-    // 停止协调器
-    Stop(ctx context.Context) error
+    SaveTask(ctx context.Context, task *Task) error
+    GetTask(ctx context.Context, id string) (*Task, error)
+    DeleteTask(ctx context.Context, id string) error
+    ListTasks(ctx context.Context) ([]*Task, error)
 
-    // 节点管理
-    NodeManager() NodeManager
+    SavePosition(ctx context.Context, taskID string, pos *event.Position) error
+    GetPosition(ctx context.Context, taskID string) (*event.Position, error)
 
-    // 任务调度器
-    TaskScheduler() TaskScheduler
+    // 任务级 leader election —— 每个 taskID 独立选主
+    AcquireLeadership(ctx context.Context, taskID string) (bool, error)
+    ReleaseLeadership(ctx context.Context, taskID string) error
+    IsLeader(ctx context.Context, taskID string) (bool, error)
+    WatchLeadership(ctx context.Context, taskID string) (<-chan LeadershipEvent, error)
 
-    // 锁服务
-    Locker() Locker
-
-    // 获取协调器状态
-    Status() *CoordinatorStatus
+    RegisterNode(ctx context.Context, nodeID string, info NodeInfo) error
+    UnregisterNode(ctx context.Context, nodeID string) error
+    ListNodes(ctx context.Context) ([]NodeInfo, error)
+    Heartbeat(ctx context.Context, nodeID string) error
 }
 
-// CoordinatorStatus 协调器状态
-type CoordinatorStatus struct {
-    // 当前节点信息
-    Node *NodeInfo
-
-    // 集群节点列表
-    Nodes []*NodeInfo
-
-    // 任务列表
-    Tasks []*TaskInfo
-
-    // 是否为 Leader
-    IsLeader bool
-}
-```
-
-### NodeManager 接口
-
-```go
-// NodeManager 节点管理器
-type NodeManager interface {
-    // 注册当前节点
-    Register(ctx context.Context, node *NodeInfo) error
-
-    // 注销当前节点
-    Deregister(ctx context.Context) error
-
-    // 获取所有节点
-    ListNodes(ctx context.Context) ([]*NodeInfo, error)
-
-    // 获取指定节点
-    GetNode(ctx context.Context, nodeID string) (*NodeInfo, error)
-
-    // 更新心跳
-    Heartbeat(ctx context.Context) error
-
-    // 监听节点变化
-    WatchNodes(ctx context.Context) (<-chan NodeEvent, error)
+// LeadershipEvent represents a leadership change event.
+type LeadershipEvent struct {
+    TaskID    string
+    IsLeader  bool
+    LeaderID  string
+    Timestamp int64
 }
 
-// NodeInfo 节点信息
+// NodeInfo holds information about a node.
 type NodeInfo struct {
-    // 节点 ID
-    ID string `json:"id"`
-
-    // 节点名称
-    Name string `json:"name"`
-
-    // 节点地址
-    Address string `json:"address"`
-
-    // 节点端口
-    Port int `json:"port"`
-
-    // 节点状态
-    Status NodeStatus `json:"status"`
-
-    // 节点标签
-    Labels map[string]string `json:"labels,omitempty"`
-
-    // 节点资源信息
-    Resources *NodeResources `json:"resources,omitempty"`
-
-    // 注册时间
-    RegisterTime time.Time `json:"registerTime"`
-
-    // 最后心跳时间
-    LastHeartbeat time.Time `json:"lastHeartbeat"`
-}
-
-// NodeStatus 节点状态
-type NodeStatus string
-
-const (
-    NodeStatusActive   NodeStatus = "active"   // 活跃
-    NodeStatusInactive NodeStatus = "inactive" // 不活跃
-    NodeStatusLeaving  NodeStatus = "leaving"  // 正在离开
-    NodeStatusFailed   NodeStatus = "failed"   // 故障
-)
-
-// NodeResources 节点资源
-type NodeResources struct {
-    // CPU 核数
-    CPU int `json:"cpu"`
-
-    // 内存大小 (MB)
-    Memory int `json:"memory"`
-
-    // 当前任务数
-    TaskCount int `json:"taskCount"`
-
-    // 最大任务数
-    MaxTasks int `json:"maxTasks"`
-}
-
-// NodeEvent 节点事件
-type NodeEvent struct {
-    Type   EventType `json:"type"`
-    Node   *NodeInfo `json:"node"`
+    ID        string            `json:"id"`
+    Address   string            `json:"address"`
+    Hostname  string            `json:"hostname"`
+    StartedAt int64             `json:"startedAt"` // UnixNano
+    LastSeen  int64             `json:"lastSeen"`  // UnixNano，非 time.Time
+    Labels    map[string]string `json:"labels,omitempty"`
+    Tasks     []string          `json:"tasks,omitempty"`
 }
 ```
 
-### TaskScheduler 接口
+### Task / TaskStatus
+
+任务模型定义在 `internal/pipeline/task.go`，没有独立的 `TaskInfo`/`TaskType` 类型：
 
 ```go
-// TaskScheduler 任务调度器
-type TaskScheduler interface {
-    // 创建任务
-    CreateTask(ctx context.Context, task *TaskInfo) error
-
-    // 删除任务
-    DeleteTask(ctx context.Context, taskID string) error
-
-    // 获取任务
-    GetTask(ctx context.Context, taskID string) (*TaskInfo, error)
-
-    // 获取所有任务
-    ListTasks(ctx context.Context) ([]*TaskInfo, error)
-
-    // 获取节点上的任务
-    GetTasksByNode(ctx context.Context, nodeID string) ([]*TaskInfo, error)
-
-    // 手动分配任务到节点
-    AssignTask(ctx context.Context, taskID, nodeID string) error
-
-    // 触发任务重新调度
-    Rebalance(ctx context.Context) error
-
-    // 监听任务变化
-    WatchTasks(ctx context.Context) (<-chan TaskEvent, error)
+type Task struct {
+    ID        string
+    Name      string
+    Status    TaskStatus
+    Config    *Config
+    Pipeline  *Pipeline       `json:"-"`
+    Position  *event.Position
+    CreatedAt time.Time
+    UpdatedAt time.Time
+    StartedAt *time.Time
+    StoppedAt *time.Time
 }
 
-// TaskInfo 任务信息
-type TaskInfo struct {
-    // 任务 ID
-    ID string `json:"id"`
-
-    // 任务名称
-    Name string `json:"name"`
-
-    // 任务类型
-    Type TaskType `json:"type"`
-
-    // 任务状态
-    Status TaskStatus `json:"status"`
-
-    // 任务配置
-    Config []byte `json:"config"`
-
-    // 分配的节点 ID
-    AssignedNode string `json:"assignedNode,omitempty"`
-
-    // 任务进度
-    Position []byte `json:"position,omitempty"`
-
-    // 创建时间
-    CreateTime time.Time `json:"createTime"`
-
-    // 更新时间
-    UpdateTime time.Time `json:"updateTime"`
-
-    // 错误信息
-    Error string `json:"error,omitempty"`
-
-    // 标签
-    Labels map[string]string `json:"labels,omitempty"`
-}
-
-// TaskType 任务类型
-type TaskType string
-
-const (
-    TaskTypeSync TaskType = "sync" // 数据同步任务
-)
-
-// TaskStatus 任务状态
 type TaskStatus string
 
 const (
-    TaskStatusPending   TaskStatus = "pending"   // 待分配
-    TaskStatusRunning   TaskStatus = "running"   // 运行中
-    TaskStatusPaused    TaskStatus = "paused"    // 已暂停
-    TaskStatusFailed    TaskStatus = "failed"    // 失败
-    TaskStatusCompleted TaskStatus = "completed" // 已完成
+    TaskStatusCreated  TaskStatus = "created"
+    TaskStatusStarting TaskStatus = "starting"
+    TaskStatusRunning  TaskStatus = "running"
+    TaskStatusPaused   TaskStatus = "paused"
+    TaskStatusStopping TaskStatus = "stopping"
+    TaskStatusStopped  TaskStatus = "stopped"
+    TaskStatusError    TaskStatus = "error"
 )
+```
 
-// TaskEvent 任务事件
-type TaskEvent struct {
-    Type   EventType `json:"type"`
-    Task   *TaskInfo `json:"task"`
+`TaskManager`（同文件）在 `Coordinator` 之上加了一层：任务生命周期管理 + 指标注册
+（`RegisterSourceStats`/`RegisterSinkStats`），不属于 Coordinator Layer 职责，仅在此说明避免混淆。
+
+---
+
+## Coordinator 实现
+
+### MemoryCoordinator（单节点模式）
+
+`internal/pipeline/coordinator.go`。全部状态存在内存 map 里，无锁保护（单节点场景下由调用方保证串行访问）：
+
+```go
+type MemoryCoordinator struct {
+    tasks     map[string]*Task
+    positions map[string]*event.Position
+    nodes     map[string]NodeInfo
+    leaders   map[string]string // taskID -> nodeID
+    thisNode  string
+    watchers  map[string][]chan LeadershipEvent
 }
 
-// EventType 事件类型
-type EventType string
+func NewMemoryCoordinator(nodeID string) *MemoryCoordinator
+```
 
+- `AcquireLeadership`：taskID 未被占用则本节点直接拿锁；已被占用则返回 `leader == thisNode`。
+- 单节点部署下永远只有一个节点，`AcquireLeadership` 总是成功。
+
+### EtcdCoordinator（集群模式）
+
+`internal/coordinator/etcd.go`，基于 `go.etcd.io/etcd/client/v3` 的 `concurrency.Election`：
+
+```go
+type EtcdCoordinator struct {
+    client    *clientv3.Client
+    session   *concurrency.Session
+    prefix    string
+    nodeID    string
+    leases    map[string]clientv3.LeaseID
+    elections map[string]*concurrency.Election // 每个 taskID 缓存一个 Election 实例
+    watchers  map[string][]chan pipeline.LeadershipEvent
+}
+
+func NewEtcdCoordinator(cfg *EtcdConfig) (*EtcdCoordinator, error)
+```
+
+Key 布局（`prefix` 默认 `/datastream`）：
+
+| 用途 | Key 格式 |
+|---|---|
+| 任务 | `{prefix}/tasks/{taskID}` |
+| 位点 | `{prefix}/positions/{taskID}` |
+| 任务 leader 选举 | `{prefix}/leadership/{taskID}` |
+| 节点 | `{prefix}/nodes/{nodeID}` |
+
+**关键实现细节**：
+- `AcquireLeadership` 每次调用 `concurrency.NewElection(session, key)` 并 `Campaign`；赢得选举后把该
+  `Election` 实例缓存进 `elections[taskID]`，因为 `Resign` 必须在赢得 `Campaign` 的**同一个** `Election`
+  实例上调用，否则 `ReleaseLeadership` 会失败或释放错误的会话。
+- 节点注册使用固定 30 秒 TTL 的 etcd lease（`RegisterNode` 内硬编码 `c.client.Grant(ctx, 30)`），
+  不经过 `CoordinatorConfig.SessionTTL` 配置项，`Heartbeat` 通过 `KeepAliveOnce(leaseID)` 续约。
+- `Initialize` 创建的 `concurrency.Session` TTL 硬编码为 15 秒，也未读取 `SessionTTL` 配置。
+
+⚠️ 这两处硬编码意味着 `[coordinator] session-ttl` 配置项目前对 EtcdCoordinator **不生效**，是已知的配置与实现不一致点，需要在实现层修复或从配置文档中移除该项。
+
+---
+
+## 集群协调：ClusterManager
+
+真实的心跳、选主、故障转移逻辑集中在 `internal/pipeline/cluster.go`，不是分散在
+`NodeManager`/`Handler`/`LeaderElection` 三个类里：
+
+```go
 const (
-    EventTypeAdd    EventType = "add"
-    EventTypeUpdate EventType = "update"
-    EventTypeDelete EventType = "delete"
+    NodeHeartbeatInterval = 10 * time.Second // 节点心跳间隔
+    NodeExpiryThreshold   = 30 * time.Second // 心跳超时判定节点死亡
+    RebalanceInterval     = 30 * time.Second // leader 扫描未分配任务的间隔
+    MaxTasksPerNode       = 10               // pickLeastLoaded 的软上限
 )
+
+type ClusterManager struct {
+    coordinator Coordinator
+    nodeID      string
+    nodeInfo    NodeInfo
+    localTasks  map[string]*Task // 本节点持有 leadership 的任务
+
+    onTaskAssigned   func(ctx context.Context, task *Task) error
+    onTaskRevoked    func(ctx context.Context, taskID string) error
+    onLeadershipLost func(ctx context.Context, taskID string)
+
+    isLeader bool // 是否为集群 leader（负责跑 rebalance 循环，非任务执行 leader）
+}
+
+func NewClusterManager(coordinator Coordinator, nodeID, address, hostname string) *ClusterManager
 ```
 
-### Locker 接口
+### 任务级 leader election（区别于"单一集群 leader"模型）
+
+`ClusterManager` 里有两层 leadership，容易混淆：
+
+1. **集群 leader**（`_cluster_leader` 固定 key）：只负责跑 `rebalanceCluster` 扫描逻辑，是单一节点。
+2. **任务 leader**（每个 `task.ID` 一个 key）：真正执行某个同步任务的节点，是**按任务分散**的——
+   不同任务可以由不同节点同时持有 leadership，集群 leader 不会把所有任务都抢到自己身上执行。
 
 ```go
-// Locker 分布式锁接口
-type Locker interface {
-    // 获取锁
-    Lock(ctx context.Context, key string, opts ...LockOption) (Lock, error)
+// Start: 注册节点 + 启动 heartbeatLoop + leaderLoop
+func (m *ClusterManager) Start(ctx context.Context) error
 
-    // 尝试获取锁（非阻塞）
-    TryLock(ctx context.Context, key string, opts ...LockOption) (Lock, error)
-}
+// heartbeatLoop：每 NodeHeartbeatInterval 发送心跳 + 重新注册（刷新 LastSeen）
+func (m *ClusterManager) heartbeatLoop()
 
-// Lock 锁实例
-type Lock interface {
-    // 释放锁
-    Unlock(ctx context.Context) error
+// leaderLoop：抢 "_cluster_leader" 集群锁；抢到后运行 leaderTasks（rebalance 循环）
+func (m *ClusterManager) leaderLoop()
 
-    // 续约
-    Renew(ctx context.Context) error
+// rebalanceCluster：探活失败节点（超过 NodeExpiryThreshold 未心跳）
+// → 找出未分配任务 → pickLeastLoaded 挑负载最低的存活节点 → acquireTask
+func (m *ClusterManager) rebalanceCluster(ctx context.Context)
 
-    // 获取锁信息
-    Info() *LockInfo
-}
+// acquireTask：AcquireLeadership(taskID) 成功后记入 localTasks，触发 onTaskAssigned 回调
+func (m *ClusterManager) acquireTask(ctx context.Context, task *Task)
 
-// LockInfo 锁信息
-type LockInfo struct {
-    Key       string    `json:"key"`
-    Holder    string    `json:"holder"`
-    Acquired  time.Time `json:"acquired"`
-    TTL       time.Duration `json:"ttl"`
-}
-
-// LockOption 锁选项
-type LockOption func(*LockOptions)
-
-type LockOptions struct {
-    TTL     time.Duration // 锁过期时间
-    Wait    time.Duration // 等待时间
-    Holder  string        // 锁持有者标识
-}
+// WatchLeadership：监听某任务的 leadership 变更事件，失去 leadership 时触发 onLeadershipLost
+func (m *ClusterManager) WatchLeadership(ctx context.Context, taskID string)
 ```
+
+⚠️ **已知缺陷**（`cluster.go:260-276`，`rebalanceCluster` 内）：判断"任务是否已被分配给某个存活节点"
+的分支目前只是把计算出的 `leaderKey` 丢弃（`_ = leaderKey`），并未真正查询该 key 判断任务当前归属，
+导致已分配的任务可能被错误地当成"未分配"重新参与 rebalance。修复前不应依赖该路径做生产环境容量规划，
+详见 `MEMORY.md`。
 
 ---
 
-## 协调后端实现
+## 配置
 
-### Backend 接口
+`CoordinatorConfig`（`pkg/config/config.go`）：
 
 ```go
-// Backend 协调后端接口
-type Backend interface {
-    // 初始化
-    Init(ctx context.Context) error
-
-    // 关闭
-    Close() error
-
-    // KV 操作
-    Put(ctx context.Context, key, value string) error
-    Get(ctx context.Context, key string) (string, error)
-    Delete(ctx context.Context, key string) error
-    List(ctx context.Context, prefix string) (map[string]string, error)
-
-    // 监听
-    Watch(ctx context.Context, key string) (<-chan WatchEvent, error)
-
-    // 事务
-    Txn(ctx context.Context, ops ...TxnOp) error
-
-    // 锁
-    Lock(ctx context.Context, key string, opts LockOptions) (Lock, error)
-
-    // Leader 选举
-    Campaign(ctx context.Context, key string, value string) (LeaderSession, error)
-
-    // 健康检查
-    HealthCheck(ctx context.Context) error
+type CoordinatorConfig struct {
+    Type            string     `toml:"type"`             // memory | etcd
+    Backend         string     `toml:"backend"`
+    Endpoints       []string   `toml:"endpoints"`
+    SessionTTL      int        `toml:"session-ttl"`      // ⚠️ 当前对 EtcdCoordinator 不生效，见上文
+    ElectionTimeout int        `toml:"election-timeout"`
+    Etcd            EtcdConfig `toml:"etcd"`
 }
 
-// WatchEvent 监听事件
-type WatchEvent struct {
-    Type   EventType `json:"type"`
-    Key    string    `json:"key"`
-    Value  string    `json:"value"`
-}
-
-// TxnOp 事务操作
-type TxnOp interface {
-    isTxnOp()
-}
-
-// LeaderSession Leader 会话
-type LeaderSession interface {
-    // 释放 Leader
-    Resign() error
-
-    // 是否仍是 Leader
-    IsLeader() bool
+type EtcdConfig struct {
+    Endpoints   []string `toml:"endpoints"`
+    DialTimeout int      `toml:"dial-timeout"`
+    Username    string   `toml:"username"`
+    Password    string   `toml:"password"`
+    TLSCA       string   `toml:"tls-ca"`
+    TLSCert     string   `toml:"tls-cert"`
+    TLSKey      string   `toml:"tls-key"`
 }
 ```
 
-### etcd Backend
-
-```go
-package etcd
-
-import (
-    "context"
-    "time"
-
-    "go.etcd.io/etcd/client/v3"
-    "go.etcd.io/etcd/client/v3/concurrency"
-)
-
-// Backend etcd 后端实现
-type Backend struct {
-    client *clientv3.Client
-
-    // 配置
-    cfg *Config
-
-    // 租约
-    lease clientv3.Lease
-
-    // 会话
-    session *concurrency.Session
-}
-
-// Config etcd 配置
-type Config struct {
-    // etcd 端点
-    Endpoints []string `toml:"endpoints" json:"endpoints"`
-
-    // 连接超时
-    DialTimeout time.Duration `toml:"dialTimeout" json:"dialTimeout"`
-
-    // 认证信息
-    Username string `toml:"username" json:"username"`
-    Password string `toml:"password" json:"password"`
-
-    // TLS 配置
-    TLS *TLSConfig `toml:"tls" json:"tls"`
-
-    // 键前缀
-    Prefix string `toml:"prefix" json:"prefix"`
-}
-
-// NewBackend 创建 etcd 后端
-func NewBackend(cfg *Config) (*Backend, error) {
-    client, err := clientv3.New(clientv3.Config{
-        Endpoints:   cfg.Endpoints,
-        DialTimeout: cfg.DialTimeout,
-        Username:    cfg.Username,
-        Password:    cfg.Password,
-    })
-    if err != nil {
-        return nil, err
-    }
-
-    return &Backend{
-        client: client,
-        cfg:    cfg,
-    }, nil
-}
-
-// Put 写入键值
-func (b *Backend) Put(ctx context.Context, key, value string) error {
-    fullKey := b.cfg.Prefix + key
-    _, err := b.client.Put(ctx, fullKey, value)
-    return err
-}
-
-// Get 读取键值
-func (b *Backend) Get(ctx context.Context, key string) (string, error) {
-    fullKey := b.cfg.Prefix + key
-    resp, err := b.client.Get(ctx, fullKey)
-    if err != nil {
-        return "", err
-    }
-    if len(resp.Kvs) == 0 {
-        return "", ErrKeyNotFound
-    }
-    return string(resp.Kvs[0].Value), nil
-}
-
-// Lock 获取分布式锁
-func (b *Backend) Lock(ctx context.Context, key string, opts LockOptions) (Lock, error) {
-    mutex := concurrency.NewMutex(b.session, b.cfg.Prefix+key)
-
-    if err := mutex.Lock(ctx); err != nil {
-        return nil, err
-    }
-
-    return &etcdLock{
-        mutex: mutex,
-        key:   key,
-    }, nil
-}
-
-// Campaign 参与 Leader 选举
-func (b *Backend) Campaign(ctx context.Context, key string, value string) (LeaderSession, error) {
-    election := concurrency.NewElection(b.session, b.cfg.Prefix+key)
-
-    if err := election.Campaign(ctx, value); err != nil {
-        return nil, err
-    }
-
-    return &etcdLeaderSession{
-        election: election,
-        session:  b.session,
-    }, nil
-}
-```
-
-### Memory Backend（单节点模式）
-
-```go
-package memory
-
-import (
-    "context"
-    "sync"
-    "time"
-)
-
-// Backend 内存后端实现（单节点模式）
-type Backend struct {
-    mu     sync.RWMutex
-    data   map[string]string
-    locks  map[string]*memLock
-    watches map[string][]chan WatchEvent
-}
-
-// NewBackend 创建内存后端
-func NewBackend() *Backend {
-    return &Backend{
-        data:    make(map[string]string),
-        locks:   make(map[string]*memLock),
-        watches: make(map[string][]chan WatchEvent),
-    }
-}
-
-// Put 写入键值
-func (b *Backend) Put(ctx context.Context, key, value string) error {
-    b.mu.Lock()
-    defer b.mu.Unlock()
-
-    b.data[key] = value
-
-    // 触发监听
-    b.notifyWatchers(key, value)
-
-    return nil
-}
-
-// Lock 获取锁（单节点模式下的简化实现）
-func (b *Backend) Lock(ctx context.Context, key string, opts LockOptions) (Lock, error) {
-    b.mu.Lock()
-    defer b.mu.Unlock()
-
-    if lock, exists := b.locks[key]; exists {
-        // 检查锁是否过期
-        if time.Now().Before(lock.expiresAt) {
-            return nil, ErrLockConflict
-        }
-    }
-
-    lock := &memLock{
-        key:        key,
-        holder:     opts.Holder,
-        acquired:   time.Now(),
-        expiresAt:  time.Now().Add(opts.TTL),
-    }
-    b.locks[key] = lock
-
-    return lock, nil
-}
-```
-
----
-
-## 故障转移设计
-
-### FailoverHandler
-
-```go
-package failover
-
-import (
-    "context"
-    "time"
-
-    "datastream/coordinator"
-)
-
-// Handler 故障转移处理器
-type Handler struct {
-    coordinator coordinator.Coordinator
-
-    // 故障检测间隔
-    checkInterval time.Duration
-
-    // 心跳超时时间
-    heartbeatTimeout time.Duration
-}
-
-// NewHandler 创建故障转移处理器
-func NewHandler(coord coordinator.Coordinator) *Handler {
-    return &Handler{
-        coordinator:      coord,
-        checkInterval:    5 * time.Second,
-        heartbeatTimeout: 30 * time.Second,
-    }
-}
-
-// Run 运行故障检测
-func (h *Handler) Run(ctx context.Context) error {
-    ticker := time.NewTicker(h.checkInterval)
-    defer ticker.Stop()
-
-    for {
-        select {
-        case <-ctx.Done():
-            return ctx.Err()
-        case <-ticker.C:
-            if err := h.checkNodes(ctx); err != nil {
-                log.Error("failed to check nodes", zap.Error(err))
-            }
-        }
-    }
-}
-
-// checkNodes 检查节点状态
-func (h *Handler) checkNodes(ctx context.Context) error {
-    nodes, err := h.coordinator.NodeManager().ListNodes(ctx)
-    if err != nil {
-        return err
-    }
-
-    now := time.Now()
-
-    for _, node := range nodes {
-        // 检查心跳超时
-        if now.Sub(node.LastHeartbeat) > h.heartbeatTimeout {
-            // 标记节点为故障
-            if err := h.handleFailedNode(ctx, node); err != nil {
-                log.Error("failed to handle failed node",
-                    zap.String("node", node.ID),
-                    zap.Error(err),
-                )
-            }
-        }
-    }
-
-    return nil
-}
-
-// handleFailedNode 处理故障节点
-func (h *Handler) handleFailedNode(ctx context.Context, node *coordinator.NodeInfo) error {
-    log.Warn("node failed, rebalancing tasks",
-        zap.String("node", node.ID),
-    )
-
-    // 1. 获取故障节点上的任务
-    tasks, err := h.coordinator.TaskScheduler().GetTasksByNode(ctx, node.ID)
-    if err != nil {
-        return err
-    }
-
-    // 2. 重新分配任务
-    for _, task := range tasks {
-        if err := h.reassignTask(ctx, task); err != nil {
-            log.Error("failed to reassign task",
-                zap.String("task", task.ID),
-                zap.Error(err),
-            )
-        }
-    }
-
-    // 3. 从节点列表中移除故障节点
-    // 由心跳超时机制自动处理
-
-    return nil
-}
-
-// reassignTask 重新分配任务
-func (h *Handler) reassignTask(ctx context.Context, task *coordinator.TaskInfo) error {
-    // 选择新节点
-    newNode, err := h.selectNode(ctx, task)
-    if err != nil {
-        return err
-    }
-
-    // 分配任务到新节点
-    return h.coordinator.TaskScheduler().AssignTask(ctx, task.ID, newNode.ID)
-}
-
-// selectNode 选择节点（负载均衡）
-func (h *Handler) selectNode(ctx context.Context, task *coordinator.TaskInfo) (*coordinator.NodeInfo, error) {
-    nodes, err := h.coordinator.NodeManager().ListNodes(ctx)
-    if err != nil {
-        return nil, err
-    }
-
-    // 过滤活跃节点
-    var activeNodes []*coordinator.NodeInfo
-    for _, node := range nodes {
-        if node.Status == coordinator.NodeStatusActive {
-            activeNodes = append(activeNodes, node)
-        }
-    }
-
-    if len(activeNodes) == 0 {
-        return nil, ErrNoAvailableNode
-    }
-
-    // 选择负载最低的节点
-    var selected *coordinator.NodeInfo
-    minTasks := int(^uint(0) >> 1) // Max int
-
-    for _, node := range activeNodes {
-        if node.Resources != nil && node.Resources.TaskCount < minTasks {
-            minTasks = node.Resources.TaskCount
-            selected = node
-        }
-    }
-
-    return selected, nil
-}
-```
-
----
-
-## Leader 选举
-
-```go
-package election
-
-import (
-    "context"
-
-    "datastream/coordinator"
-)
-
-// LeaderElection Leader 选举
-type LeaderElection struct {
-    backend coordinator.Backend
-
-    // 当前节点 ID
-    nodeID string
-
-    // 选举 Key
-    key string
-
-    // 当前 Leader 会话
-    session coordinator.LeaderSession
-}
-
-// Run 参与 Leader 选举
-func (e *LeaderElection) Run(ctx context.Context) error {
-    for {
-        select {
-        case <-ctx.Done():
-            return ctx.Err()
-        default:
-            // 尝试成为 Leader
-            session, err := e.backend.Campaign(ctx, e.key, e.nodeID)
-            if err != nil {
-                log.Error("failed to campaign for leader",
-                    zap.Error(err),
-                )
-                time.Sleep(1 * time.Second)
-                continue
-            }
-
-            e.session = session
-            log.Info("became leader", zap.String("node", e.nodeID))
-
-            // 保持 Leader 状态
-            e.maintainLeadership(ctx)
-        }
-    }
-}
-
-// maintainLeadership 维持 Leader 状态
-func (e *LeaderElection) maintainLeadership(ctx context.Context) {
-    // 等待会话失效或上下文取消
-    <-ctx.Done()
-
-    if e.session != nil {
-        e.session.Resign()
-    }
-}
-
-// IsLeader 检查是否为 Leader
-func (e *LeaderElection) IsLeader() bool {
-    return e.session != nil && e.session.IsLeader()
-}
-```
-
----
-
-## 运行模式
-
-### 单节点模式
-
-```go
-// StandaloneCoordinator 单节点协调器
-type StandaloneCoordinator struct {
-    backend *memory.Backend
-    tasks   map[string]*TaskInfo
-    mu      sync.RWMutex
-}
-
-func NewStandaloneCoordinator() *StandaloneCoordinator {
-    return &StandaloneCoordinator{
-        backend: memory.NewBackend(),
-        tasks:   make(map[string]*TaskInfo),
-    }
-}
-
-// 单节点模式下不需要 Leader 选举和故障转移
-// 所有任务都在本地执行
-```
-
-### 集群模式
-
-```go
-// ClusterCoordinator 集群协调器
-type ClusterCoordinator struct {
-    backend     *etcd.Backend
-    nodeManager *NodeManager
-    scheduler   *TaskScheduler
-    failover    *failover.Handler
-    election    *LeaderElection
-}
-
-func NewClusterCoordinator(cfg *etcd.Config, nodeID string) (*ClusterCoordinator, error) {
-    backend, err := etcd.NewBackend(cfg)
-    if err != nil {
-        return nil, err
-    }
-
-    coord := &ClusterCoordinator{
-        backend: backend,
-    }
-
-    coord.nodeManager = NewNodeManager(backend, nodeID)
-    coord.scheduler = NewTaskScheduler(backend)
-    coord.failover = failover.NewHandler(coord)
-    coord.election = NewLeaderElection(backend, nodeID)
-
-    return coord, nil
-}
-
-func (c *ClusterCoordinator) Start(ctx context.Context) error {
-    // 1. 注册节点
-    if err := c.nodeManager.Register(ctx); err != nil {
-        return err
-    }
-
-    // 2. 启动心跳
-    go c.heartbeatLoop(ctx)
-
-    // 3. 启动 Leader 选举
-    go c.election.Run(ctx)
-
-    // 4. 启动故障检测（仅 Leader）
-    go func() {
-        if c.election.IsLeader() {
-            c.failover.Run(ctx)
-        }
-    }()
-
-    return nil
-}
-```
-
----
-
-## 配置示例
+TOML 示例（`docs/user-guide.md` §3 已有等价示例，此处对齐字段名）：
 
 ```toml
 [coordinator]
-# 运行模式: standalone, cluster
-mode = "cluster"
+type             = "etcd"      # memory | etcd
+session-ttl      = 15
+election-timeout = 5000        # ms
 
-# 节点配置
-[coordinator.node]
-id = "node-1"
-name = "datastream-node-1"
-address = "192.168.1.100"
-port = 8080
-max-tasks = 10
-
-# 心跳配置
-[coordinator.heartbeat]
-interval = "5s"
-timeout = "30s"
-
-# etcd 配置（集群模式）
 [coordinator.etcd]
-endpoints = ["http://etcd1:2379", "http://etcd2:2379", "http://etcd3:2379"]
-dial-timeout = "5s"
-username = ""
-password = ""
-prefix = "/datastream/"
-
-# 故障转移配置
-[coordinator.failover]
-check-interval = "5s"
-heartbeat-timeout = "30s"
+endpoints    = ["etcd1:2379", "etcd2:2379", "etcd3:2379"]
+dial-timeout = 5
+username     = ""
+password     = ""
+tls-ca       = "/etc/datastream/ca.pem"
+tls-cert     = "/etc/datastream/cert.pem"
+tls-key      = "/etc/datastream/key.pem"
 ```
 
 ---
@@ -900,15 +322,15 @@ heartbeat-timeout = "30s"
 
 | 决策项 | 选择 | 说明 |
 |--------|------|------|
-| 协调后端 | etcd 优先 | 成熟的分布式协调系统 |
-| 单节点模式 | 内存后端 | 简化部署，无需外部依赖 |
-| Leader 选举 | etcd 选举 | 内置支持，可靠 |
-| 心跳机制 | 定时心跳 | 5 秒间隔，30 秒超时 |
-| 任务分配 | 负载均衡 | 选择负载最低的节点 |
-| 故障恢复 | 自动迁移 | 检测故障后自动重新分配任务 |
+| 协调后端 | etcd（集群）/ 内存（单节点） | 无 Consul 支持；`Type` 只接受 `memory`/`etcd` |
+| Leader 选举粒度 | **按任务**，非按集群 | 任务分散到多个节点各自持有 leadership，负载均衡由 `pickLeastLoaded` 完成 |
+| 集群 leader 职责 | 仅跑 rebalance 扫描 | 不代表集群 leader 会执行所有任务 |
+| 心跳/过期 | 10s 心跳 / 30s 过期 | `NodeHeartbeatInterval` / `NodeExpiryThreshold`，代码常量，未走配置 |
+| etcd session/lease TTL | 15s / 30s，硬编码 | 未读取 `CoordinatorConfig.SessionTTL`，是已知不一致点 |
+| 故障恢复 | rebalance 自动重分配 | 但 `rebalanceCluster` 的已分配任务判断逻辑当前不完整（见上文已知缺陷） |
 
 ---
 
-*文档版本：v1.0*
+*文档版本：v2.0*
 *创建时间：2026-05-07*
-*更新时间：2026-05-07*
+*重写时间：2026-07-03（删除与实现不符的 Handler/NodeManager/TaskScheduler/Locker/LeaderElection 伪代码，替换为 internal/pipeline/{coordinator,cluster,task}.go 与 internal/coordinator/etcd.go 的真实接口和已知缺陷）*

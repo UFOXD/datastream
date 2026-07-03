@@ -1,6 +1,6 @@
 # DataStream 项目模块图谱
 
-> Last Updated: 2026-05-13
+> Last Updated: 2026-06-29
 
 ## 架构层次
 
@@ -33,6 +33,11 @@
 | api | internal/api | ✅ 完成 | gorilla/mux | app |
 | cli | internal/cli | ✅ 完成 | spf13/cobra | cmd |
 | app | internal/app | ✅ 完成 | - | cmd |
+| store | internal/store | ✅ 完成 | database/sql | schema, lifecycle |
+| schema | internal/schema | ✅ 完成 | store | source, lifecycle |
+| cache | internal/cache | ✅ 完成 | - | lifecycle |
+| lifecycle | internal/lifecycle | ✅ 完成 | cache, schema, store, source | pipeline, app |
+| connector | internal/connector | ✅ 完成 | - | source, sink |
 
 ### 状态说明
 
@@ -128,6 +133,76 @@
 - `*` - 匹配任意字符序列（包括空）
 - `?` - 匹配单个字符
 - 示例: `table*` 匹配 `table1`, `table_name`; `*_suffix` 匹配 `abc_suffix`
+
+### internal/pipeline（新增：集群 HA，2026-06-29）
+
+**功能**: 多节点集群协调（心跳 + leader 调度 + 故障探测）
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| ClusterManager | cluster.go | 节点注册/心跳/leader election/故障转移 |
+
+**关键机制**:
+- `NodeHeartbeatInterval` = 10s，`NodeExpiryThreshold` = 30s（超时判定节点死亡）
+- `RebalanceInterval` = 30s，`MaxTasksPerNode` = 10（负载均衡上限）
+- 任务级 leader election：每个 task 独立抢锁（非单一集群 leader 处理全部任务）
+- `rebalanceCluster` → `pickLeastLoaded` → `acquireTask`：死节点任务重分配链路
+
+**⚠️ 已知问题**: `rebalanceCluster`（cluster.go:260-276）中"任务是否已分配"判断逻辑存在缺陷——`leaderKey` 变量计算后未使用（`_ = leaderKey`），故障节点任务重分配路径未经验证，见 [`MEMORY.md`](../MEMORY.md)。
+
+### internal/store
+
+**功能**: 统一存储层，任务元数据落地目标库 `ds_{task_id}`
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| TargetStore | store.go | 存储层接口（位点/表生命周期/Schema History/DDL 状态） |
+| MySQLStore | mysql_store.go | MySQL 实现 |
+| NoopStore | noop_store.go | 空实现（测试/无存储场景） |
+
+### internal/schema
+
+**功能**: Schema History 管理，DDL 状态机
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| Tables | tables.go | 表结构内存集合（Put/Get/Remove/All/Count） |
+| DDLRecordManager | ddl_record.go | DDL 状态机（pending→applying→completed/failed/skipped） |
+| SchemaHistory | schema_history.go | Schema History 接口 |
+| LocalSchemaHistory | local_history.go | 本地文件实现 |
+| StoreSchemaHistory | store_history.go | 委托 TargetStore 的实现 |
+| TargetStoreSchemaHistory | target_store_history.go | Oracle/SQLServer 适配器 |
+
+### internal/cache
+
+**功能**: Binlog 缓存后端（对应 `pipeline.cache` 配置项）
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| BinlogCacheBackend | backend.go | 缓存后端接口 + SyncMode（none/batch/every） |
+| LocalBackend | local_backend.go | 本地磁盘实现 |
+| CacheEvent | cache_event.go | 缓存事件模型 |
+| CacheLevel | cache_size.go | 缓存大小分级（对应配置 `max-size`） |
+
+### internal/lifecycle
+
+**功能**: 表级独立生命周期（snapshot → catching_up → streaming）
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| SnapshotScheduler | snapshot_scheduler.go | 快照调度器 |
+| CatchingUpReplayer | catching_up_replayer.go | 追赶阶段 binlog 重放 |
+| BinlogConsumer | binlog_consumer.go | Binlog 消费入口 |
+| LifecyclePipeline | pipeline_integration.go | 生命周期与 Pipeline 集成 |
+| HashChunker | hash_chunker.go | 快照分片 |
+
+### internal/connector
+
+**功能**: 连接器统计接口
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| StatsProvider | stats.go | 连接器统计接口 |
 
 ---
 
@@ -289,5 +364,6 @@ func DefaultConfig() *Config
 
 ---
 
-*文档版本：v1.0*
+*文档版本：v1.1*
 *创建时间：2026-05-13*
+*最后修订：2026-07-03（补充 store/schema/cache/lifecycle/connector 模块 + pipeline 集群 HA）*

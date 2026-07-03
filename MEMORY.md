@@ -1,6 +1,6 @@
 # DataStream Project Memory
 
-> Last Updated: 2026-06-26
+> Last Updated: 2026-06-29
 
 ## Project Overview
 
@@ -43,6 +43,18 @@ DataStream is a Go-based CDC (Change Data Capture) platform that refactors Debez
 - ✅ DDLRecordManager 状态机（pending→applying→completed/failed/skipped）
 - ✅ SchemaHistory → Tables Recover 启动恢复
 - ✅ DDL 状态持久化 + 崩溃重试
+
+### 集群 HA（2026-06-29）
+- ✅ ClusterManager（`internal/pipeline/cluster.go`）：节点注册/心跳/leader 调度/故障探测
+- ✅ 任务级 leader election：每个 task 独立抢锁，非单一集群 leader 处理全部任务
+- ✅ rebalanceCluster：探活失败节点（心跳超时 30s）→ 未分配任务按最低负载重新分配
+- ⚠️ **已知缺口**：`rebalanceCluster` 中判断"任务是否已分配"的逻辑（`internal/pipeline/cluster.go:265-275`）未真正查询任务归属节点，`leaderKey` 变量被赋值后丢弃（`_ = leaderKey`），故障转移的节点重分配路径尚未闸门验证
+- ✅ `docs/design/coordinator-design.md` 已重写（v2.0，2026-07-03）：删除 Handler/LeaderElection/NodeManager/TaskScheduler/Locker 伪代码，替换为 `internal/pipeline/{coordinator,cluster,task}.go` + `internal/coordinator/etcd.go` 的真实接口，并记录了 etcd session/lease TTL 硬编码不读配置的问题
+
+### 缓存大小配置（2026-06-29）
+- ✅ `pkg/config/config.go` PipelineConfig.Cache：`max-size`（百分比或固定值，如 "80%"/"100GB"）+ `sync`（none/batch/every）
+- ✅ 环境变量覆盖：`DATASTREAM_PIPELINE_CACHE_MAX_SIZE` / `DATASTREAM_PIPELINE_CACHE_SYNC`
+- ⚠️ 与 `log.max-size`（日志单文件 MB 上限）同名不同义，用户文档需明确区分，避免误配置
 
 ---
 
