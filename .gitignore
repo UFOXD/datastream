@@ -62,3 +62,4 @@ temp/
 !.omc/project-memory.json
 !.omc/.gitkeep
 .claude/worktrees/
+.claude
